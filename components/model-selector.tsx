@@ -24,6 +24,7 @@ export function ModelSelector({
   selectedModelId: string;
   chatId: string;
   userInput: string;
+  className?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [optimisticModelId, setOptimisticModelId] =
