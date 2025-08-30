@@ -1,7 +1,6 @@
 'use client';
 
 import { startTransition, useMemo, useOptimistic, useState } from 'react';
-
 import { saveChatModelAsCookie } from '@/app/(chat)/actions';
 import { Button } from '@/components/ui/button';
 import {
@@ -10,11 +9,8 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { chatModels } from '@/lib/ai/models';
 import { cn } from '@/lib/utils';
-
 import { CheckCircleFillIcon, ChevronDownIcon } from './icons';
-import { entitlementsByUserType } from '@/lib/ai/entitlements';
 import type { Session } from 'next-auth';
 
 export function ModelSelector({
@@ -29,11 +25,18 @@ export function ModelSelector({
   const [optimisticModelId, setOptimisticModelId] =
     useOptimistic(selectedModelId);
 
-  const allowedModels = ['meta-llama/llama-guard-4-12b', 'gemma2-9b-it'];
-
-  const availableChatModels = chatModels.filter((chatModel) =>
-    allowedModels.includes(chatModel.id)
-  );
+  const availableChatModels = [
+    {
+      id: 'meta-llama/llama-guard-4-12b',
+      name: 'LLaMA Guard 12B',
+      description: 'Safe + advanced code',
+    },
+    {
+      id: 'gemma2-9b-it',
+      name: 'Gemma 2 9B',
+      description: 'Fast, lightweight code',
+    },
+  ];
 
   const selectedChatModel = useMemo(
     () =>
@@ -71,7 +74,6 @@ export function ModelSelector({
               key={id}
               onSelect={() => {
                 setOpen(false);
-
                 startTransition(() => {
                   setOptimisticModelId(id);
                   saveChatModelAsCookie(id);
