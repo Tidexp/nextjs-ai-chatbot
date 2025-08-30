@@ -29,11 +29,10 @@ export function ModelSelector({
   const [optimisticModelId, setOptimisticModelId] =
     useOptimistic(selectedModelId);
 
-  const userType = session.user.type;
-  const { availableChatModelIds } = entitlementsByUserType[userType];
+  const allowedModels = ['meta-llama/llama-guard-4-12b', 'gemma2-9b-it'];
 
   const availableChatModels = chatModels.filter((chatModel) =>
-    availableChatModelIds.includes(chatModel.id),
+    allowedModels.includes(chatModel.id)
   );
 
   const selectedChatModel = useMemo(
