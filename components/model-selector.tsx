@@ -18,6 +18,7 @@ export function ModelSelector({
   selectedModelId,
   chatId,
   userInput,
+  className,
 }: {
   session: Session;
   selectedModelId: string;
