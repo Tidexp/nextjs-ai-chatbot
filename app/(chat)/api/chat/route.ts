@@ -5,10 +5,10 @@ import {
   smoothStream,
   stepCountIs,
   streamText,
+  UIMessage,
 } from 'ai';
 import { auth, type UserType } from '@/app/(auth)/auth';
 import { type RequestHints, systemPrompt } from '@/lib/ai/prompts';
-import { UIMessage } from 'ai';
 import {
   createStreamId,
   deleteChatById,
@@ -65,11 +65,11 @@ export function getStreamContext() {
 }
 
 // Helper function to convert schema messages to internal ChatMessage format
-function convertSchemaMessagesToUIMessages(messages: PostRequestBody['messages']): ChatMessage[] {
+function convertSchemaMessagesToUIMessages(messages: PostRequestBody['messages']): UIMessage[] {
   return messages.map((msg) => ({
     id: generateUUID(),
-    role: msg.role as ChatMessage['role'],
-    parts: msg.content.map((part) => {
+    role: msg.role,
+    content: msg.content.map((part) => {
       if (part.type === 'text') {
         return {
           type: 'text' as const,
@@ -82,9 +82,10 @@ function convertSchemaMessagesToUIMessages(messages: PostRequestBody['messages']
           image: part.url,
         };
       }
-    }) as ChatMessage['parts'],
-    createdAt: new Date(),
+    }),
+    createdAt: new Date().toISOString(),
   }));
+}
 
 // Helper function to extract chat ID from messages or generate new one
 function extractOrGenerateChatId(messages: PostRequestBody['messages']): string {
