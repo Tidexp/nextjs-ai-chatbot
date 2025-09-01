@@ -66,71 +66,32 @@ export function getStreamContext() {
 
 // Helper function to convert schema messages to internal ChatMessage format
 function convertSchemaMessagesToUIMessages(messages: PostRequestBody['messages']): any[] {
-  if (!Array.isArray(messages)) {
-    console.error('[convertSchemaMessagesToUIMessages] Messages is not an array:', messages);
-    return [];
-  }
-
-  return messages.map((msg) => {
-    if (!msg || typeof msg !== 'object') {
-      console.error('[convertSchemaMessagesToUIMessages] Invalid message:', msg);
-      return null;
-    }
-
-    const content = Array.isArray(msg.content) ? msg.content : 
-                   typeof msg.content === 'string' ? [{ type: 'text', text: msg.content }] : [];
-
-    return {
-      id: generateUUID(),
-      role: msg.role,
-      content: content.map((part: any) => {
-        if (!part || typeof part !== 'object') {
-          return { type: 'text', text: String(part) };
-        }
-
-        if (part.type === 'text') {
-          return {
-            type: 'text' as const,
-            text: part.text || '',
-          };
-        } else if (part.type === 'image' || part.url) {
-          // For file parts, map to image format
-          return {
-            type: 'image' as const,
-            image: part.url || part.image,
-          };
-        } else {
-          // Fallback for unknown content types
-          return {
-            type: 'text' as const,
-            text: JSON.stringify(part),
-          };
-        }
-      }),
-      createdAt: new Date().toISOString(),
-    };
-  }).filter(Boolean);
+  return messages.map((msg) => ({
+    id: generateUUID(),
+    role: msg.role,
+    content: msg.content.map((part) => {
+      if (part.type === 'text') {
+        return {
+          type: 'text' as const,
+          text: part.text,
+        };
+      } else {
+        // For file parts, map to image format
+        return {
+          type: 'image' as const,
+          image: part.url,
+        };
+      }
+    }),
+    createdAt: new Date().toISOString(),
+  }));
 }
 
 // Helper function to extract chat ID from messages or generate new one
-function extractOrGenerateChatId(messages: PostRequestBody['messages'], requestUrl?: string): string {
-  // Try to extract chat ID from URL or headers first
-  if (requestUrl) {
-    const url = new URL(requestUrl);
-    const chatIdFromUrl = url.searchParams.get('chatId');
-    if (chatIdFromUrl) return chatIdFromUrl;
-  }
-
-  // Try to find chat ID in system message
-  if (Array.isArray(messages)) {
-    const systemMessage = messages.find(msg => msg?.role === 'system');
-    if (systemMessage && typeof systemMessage.content === 'string') {
-      const chatIdMatch = systemMessage.content.match(/chatId:\s*([a-fA-F0-9-]+)/);
-      if (chatIdMatch) return chatIdMatch[1];
-    }
-  }
-
-  // Generate new chat ID
+function extractOrGenerateChatId(messages: PostRequestBody['messages']): string {
+  // Try to find chat ID in system message or generate new one
+  const systemMessage = messages.find(msg => msg.role === 'system');
+  // You might want to encode chat ID in system message or use a different strategy
   return generateUUID();
 }
 
@@ -139,21 +100,9 @@ export async function POST(request: Request) {
 
   try {
     const json = await request.json();
-    console.log("[POST] Raw request body:", JSON.stringify(json, null, 2));
-    
-    // Add more detailed validation logging
-    if (!json) {
-      console.error("[POST] Request body is null or undefined");
-      return new ChatSDKError('bad_request:api').toResponse();
-    }
-
     requestBody = postRequestBodySchema.parse(json);
-    console.log("[POST] Parsed request body:", JSON.stringify(requestBody, null, 2));
+    console.log("[POST] Raw request body:", JSON.stringify(json, null, 2));
   } catch (error) {
-    console.error("[POST] Schema validation error:", error);
-    if (error instanceof Error) {
-      console.error("[POST] Error details:", error.message);
-    }
     return new ChatSDKError('bad_request:api').toResponse();
   }
 
@@ -164,25 +113,13 @@ export async function POST(request: Request) {
       temperature,
       max_completion_tokens,
       top_p,
-      stream = true, // Default to true if not specified
+      stream,
       stop,
     } = requestBody;
-
-    // Validate required fields
-    if (!requestedModel) {
-      console.error("[POST] Missing model in request");
-      return new ChatSDKError('bad_request:api').toResponse();
-    }
-
-    if (!messages || !Array.isArray(messages) || messages.length === 0) {
-      console.error("[POST] Missing or invalid messages array");
-      return new ChatSDKError('bad_request:api').toResponse();
-    }
 
     const session = await auth();
 
     if (!session?.user) {
-      console.error("[POST] No authenticated user");
       return new ChatSDKError('unauthorized:chat').toResponse();
     }
 
@@ -192,13 +129,11 @@ export async function POST(request: Request) {
     // Validate the requested model exists
     const validModel = chatModels.find(model => model.id === requestedModel);
     if (!validModel) {
-      console.error("[POST] Invalid model requested:", requestedModel);
       return new ChatSDKError('bad_request:api').toResponse();
     }
 
     // Check if user can use the requested model
     if (!userEntitlements.availableChatModelIds.includes(requestedModel)) {
-      console.error("[POST] User not entitled to model:", requestedModel);
       return new ChatSDKError('forbidden:chat').toResponse();
     }
 
@@ -210,25 +145,17 @@ export async function POST(request: Request) {
     });
 
     if (messageCount >= userEntitlements.maxMessagesPerDay) {
-      console.error("[POST] User exceeded daily message limit");
       return new ChatSDKError('rate_limit:chat').toResponse();
     }
 
     // Extract or generate chat ID
-    const chatId = extractOrGenerateChatId(messages, request.url);
-    console.log("[POST] Using chat ID:", chatId);
+    const chatId = extractOrGenerateChatId(messages);
     
     // Convert schema messages to UI messages
     const uiMessages = convertSchemaMessagesToUIMessages(messages);
-    console.log("[POST] Converted UI messages:", uiMessages.length);
     
-    if (uiMessages.length === 0) {
-      console.error("[POST] No valid messages after conversion");
-      return new ChatSDKError('bad_request:api').toResponse();
-    }
-
     // Get the last user message for title generation
-    const lastUserMessage = uiMessages.filter(msg => msg?.role === 'user').pop() as ChatMessage | undefined;
+    const lastUserMessage = uiMessages.filter(msg => msg.role === 'user').pop() as ChatMessage | undefined;
 
     const chat = await getChatById({ id: chatId });
 
@@ -245,7 +172,6 @@ export async function POST(request: Request) {
       });
     } else if (chat) {
       if (chat.userId !== session.user.id) {
-        console.error("[POST] User does not own chat");
         return new ChatSDKError('forbidden:chat').toResponse();
       }
     }
@@ -258,23 +184,22 @@ export async function POST(request: Request) {
     
     // Only add new user messages that aren't already in the database
     const newUserMessages = uiMessages.filter(msg => 
-      msg?.role === 'user' && !existingUIMessages.some(existing => 
-        existing?.role === 'user' && 
+      msg.role === 'user' && !existingUIMessages.some(existing => 
+        existing.role === 'user' && 
         JSON.stringify((existing as any).content || (existing as any).parts || []) === JSON.stringify(msg.content)
       )
     ) as ChatMessage[];
 
     allUIMessages.push(...newUserMessages);
 
-    // Get geolocation data safely
-    let requestHints: RequestHints;
-    try {
-      const { longitude, latitude, city, country } = geolocation(request);
-      requestHints = { longitude, latitude, city, country };
-    } catch (geoError) {
-      console.warn("[POST] Geolocation failed:", geoError);
-      requestHints = { longitude: null, latitude: null, city: null, country: null };
-    }
+    const { longitude, latitude, city, country } = geolocation(request);
+
+    const requestHints: RequestHints = {
+      longitude,
+      latitude,
+      city,
+      country,
+    };
 
     // Save new user messages to database
     if (newUserMessages.length > 0) {
@@ -297,7 +222,7 @@ export async function POST(request: Request) {
       execute: ({ writer: dataStream }) => {
         const toolsConfig = {
           experimental_activeTools:
-            selectedChatModel !== "meta-llama/llama-guard-4-12b"
+            selectedChatModel === "meta-llama/llama-guard-4-12b"
               ? ([
                   "getWeather",
                   "createDocument",
@@ -322,10 +247,6 @@ export async function POST(request: Request) {
           model: myProvider.languageModel(selectedChatModel),
           system: systemPrompt({ selectedChatModel, requestHints }),
           messages: convertToModelMessages(allUIMessages),
-          temperature,
-          maxTokens: max_completion_tokens,
-          topP: top_p,
-          stopSequences: stop,
           ...toolsConfig,
           experimental_transform: smoothStream({ chunking: "word" }) as any,
           experimental_telemetry: {
@@ -355,8 +276,7 @@ export async function POST(request: Request) {
           })),
         });
       },
-      onError: (error) => {
-        console.error("[POST] Stream error:", error);
+      onError: () => {
         return 'Oops, an error occurred!';
       },
     });
@@ -393,12 +313,11 @@ export async function POST(request: Request) {
       }
     }
   } catch (error) {
-    console.error('[POST] Unexpected error:', error);
-    
     if (error instanceof ChatSDKError) {
       return error.toResponse();
     }
     
+    console.error('Unexpected error:', error);
     return new ChatSDKError('bad_request:api').toResponse();
   }
 }
