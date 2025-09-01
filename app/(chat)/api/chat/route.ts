@@ -149,7 +149,7 @@ export async function POST(request: Request) {
     const streamId = generateUUID();
     await createStreamId({ streamId, chatId });
 
-    const stream = createUIMessageStream({
+    const uiMessageStream = createUIMessageStream({
       execute: ({ writer: dataStream }) => {
         const result = streamText({
           model: myProvider.languageModel(selectedChatModel),
@@ -198,14 +198,15 @@ export async function POST(request: Request) {
     });
 
     const streamContext = getStreamContext();
+
     if (streamContext) {
       return new Response(
         await streamContext.resumableStream(streamId, () =>
-          stream.pipeThrough(new JsonToSseTransformStream())
+          uiMessageStream.pipeThrough(new JsonToSseTransformStream())
         )
       );
     } else {
-      return new Response(stream.pipeThrough(new JsonToSseTransformStream()));
+      return new Response(uiMessageStream.pipeThrough(new JsonToSseTransformStream()));
     }
   } catch (error) {
     if (error instanceof ChatSDKError) {
