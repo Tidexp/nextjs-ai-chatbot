@@ -223,11 +223,11 @@ export async function POST(request: Request) {
         const toolsConfig = selectedChatModel === 'meta-llama/llama-guard-4-12b'
           ? {
               experimental_activeTools: [
-                'getWeather',
-                'createDocument',
-                'updateDocument',
-                'requestSuggestions',
-              ] as const,
+                "getWeather",
+                "createDocument",
+                "updateDocument",
+                "requestSuggestions",
+              ] as ("getWeather" | "createDocument" | "updateDocument" | "requestSuggestions")[],
               tools: {
                 getWeather,
                 createDocument: createDocument({ session, dataStream }),
