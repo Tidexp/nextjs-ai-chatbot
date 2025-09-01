@@ -12,7 +12,10 @@ export const entitlementsByUserType: Record<UserType, Entitlements> = {
    */
   guest: {
     maxMessagesPerDay: 20,
-    availableChatModelIds: ['chat-model', 'chat-model-reasoning'],
+    availableChatModelIds: [
+      'meta-llama/llama-guard-4-12b',
+      'gemma2-9b-it',
+    ],
   },
 
   /*
@@ -20,10 +23,20 @@ export const entitlementsByUserType: Record<UserType, Entitlements> = {
    */
   regular: {
     maxMessagesPerDay: 100,
-    availableChatModelIds: ['chat-model', 'chat-model-reasoning'],
+    availableChatModelIds: [
+      'meta-llama/llama-guard-4-12b',
+      'gemma2-9b-it',
+    ],
   },
 
   /*
-   * TODO: For users with an account and a paid membership
+   * For users with a paid membership (TODO)
    */
+  // pro: {
+  //   maxMessagesPerDay: 1000,
+  //   availableChatModelIds: [
+  //     'meta-llama/llama-guard-4-12b',
+  //     'gemma2-9b-it',
+  //   ],
+  // },
 };
