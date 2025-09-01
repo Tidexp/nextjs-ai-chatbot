@@ -246,10 +246,6 @@ export async function POST(request: Request) {
           model: myProvider.languageModel(selectedChatModel),
           system: systemPrompt({ selectedChatModel, requestHints }),
           messages: convertToModelMessages(allUIMessages),
-          temperature,
-          maxTokens: max_completion_tokens,   
-          topP: top_p,                      
-          stop,                             
           ...toolsConfig,
           experimental_transform: smoothStream({ chunking: "word" }) as any,
           experimental_telemetry: {
