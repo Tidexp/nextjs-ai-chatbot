@@ -32,7 +32,7 @@ import {
 } from 'resumable-stream';
 import { after } from 'next/server';
 import { ChatSDKError } from '@/lib/errors';
-import type { ChatMessage, UIMessagePart } from '@/lib/types';
+import type { ChatMessage } from '@/lib/types';
 import type { ChatModel } from '@/lib/ai/models';
 
 export const maxDuration = 60;
@@ -59,7 +59,7 @@ function convertToModelMessages(uiMessages: ChatMessage[]) {
   return uiMessages.map((msg) => ({
     role: msg.role,
     content: msg.parts
-      .map((part: UIMessagePart) =>
+      .map((part) =>
         part.type === 'text'
           ? part.text
           : `[${part.mediaType}:${part.url}]`
