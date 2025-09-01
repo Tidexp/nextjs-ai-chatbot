@@ -221,13 +221,18 @@ export async function POST(request: Request) {
       execute: ({ writer: dataStream }) => {
         const toolsConfig = {
           experimental_activeTools:
-            selectedChatModel === 'meta-llama/llama-guard-4-12b'
+            selectedChatModel === "meta-llama/llama-guard-4-12b"
               ? ([
                   "getWeather",
                   "createDocument",
                   "updateDocument",
                   "requestSuggestions",
-                ] as const)
+                ] as (
+                  | "getWeather"
+                  | "createDocument"
+                  | "updateDocument"
+                  | "requestSuggestions"
+                )[])
               : [],
           tools: {
             getWeather,
