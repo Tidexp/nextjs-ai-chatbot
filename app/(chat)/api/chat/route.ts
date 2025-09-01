@@ -8,6 +8,7 @@ import {
 } from 'ai';
 import { auth, type UserType } from '@/app/(auth)/auth';
 import { type RequestHints, systemPrompt } from '@/lib/ai/prompts';
+import { UIMessage } from 'ai';
 import {
   createStreamId,
   deleteChatById,
@@ -67,7 +68,7 @@ export function getStreamContext() {
 function convertSchemaMessagesToUIMessages(messages: PostRequestBody['messages']): ChatMessage[] {
   return messages.map((msg) => ({
     id: generateUUID(),
-    role: msg.role,
+    role: msg.role as ChatMessage['role'],
     parts: msg.content.map((part) => {
       if (part.type === 'text') {
         return {
@@ -75,15 +76,15 @@ function convertSchemaMessagesToUIMessages(messages: PostRequestBody['messages']
           text: part.text,
         };
       } else {
+        // For file parts, map to image format
         return {
           type: 'image' as const,
           image: part.url,
         };
       }
-    }),
+    }) as ChatMessage['parts'],
     createdAt: new Date(),
   }));
-}
 
 // Helper function to extract chat ID from messages or generate new one
 function extractOrGenerateChatId(messages: PostRequestBody['messages']): string {
@@ -152,7 +153,7 @@ export async function POST(request: Request) {
     const uiMessages = convertSchemaMessagesToUIMessages(messages);
     
     // Get the last user message for title generation
-    const lastUserMessage = uiMessages.filter(msg => msg.role === 'user').pop();
+    const lastUserMessage = uiMessages.filter(msg => msg.role === 'user').pop() as ChatMessage | undefined;
 
     const chat = await getChatById({ id: chatId });
 
@@ -183,9 +184,9 @@ export async function POST(request: Request) {
     const newUserMessages = uiMessages.filter(msg => 
       msg.role === 'user' && !existingUIMessages.some(existing => 
         existing.role === 'user' && 
-        JSON.stringify(existing.parts) === JSON.stringify(msg.parts)
+        JSON.stringify(existing.content) === JSON.stringify(msg.content)
       )
-    );
+    ) as ChatMessage[];
 
     allUIMessages.push(...newUserMessages);
 
@@ -205,7 +206,7 @@ export async function POST(request: Request) {
           chatId,
           id: message.id,
           role: 'user',
-          parts: message.parts,
+          parts: message.content,
           attachments: [],
           createdAt: new Date(),
         })),
@@ -272,7 +273,7 @@ export async function POST(request: Request) {
           messages: messages.map((message) => ({
             id: message.id,
             role: message.role,
-            parts: message.parts,
+            parts: message.content,
             createdAt: new Date(),
             attachments: [],
             chatId,
