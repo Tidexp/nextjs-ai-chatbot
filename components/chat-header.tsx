@@ -59,8 +59,6 @@ function PureChatHeader({
         <ModelSelector
           session={session}
           selectedModelId={selectedModelId}
-          chatId={chatId}          // thêm cái này
-          userInput=""             // hoặc state chứa text input nếu có
           className="order-1 md:order-2"
         />
       )}
