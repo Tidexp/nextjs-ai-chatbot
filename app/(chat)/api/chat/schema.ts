@@ -14,15 +14,19 @@ const filePartSchema = z.object({
 
 const partSchema = z.union([textPartSchema, filePartSchema]);
 
+const messageSchema = z.object({
+  role: z.enum(["user", "system", "assistant"]),
+  content: z.array(partSchema).min(1),
+});
+
 export const postRequestBodySchema = z.object({
-  id: z.string().uuid(),
-  message: z.object({
-    id: z.string().uuid(),
-    role: z.enum(['user']),
-    parts: z.array(partSchema),
-  }),
-  selectedChatModel: z.enum(['chat-model', 'chat-model-reasoning']),
-  selectedVisibilityType: z.enum(['public', 'private']),
+  model: z.string().min(1), // ví dụ: "meta-llama/llama-guard-4-12b"
+  messages: z.array(messageSchema).min(1),
+  temperature: z.number().min(0).max(2).default(1),
+  max_completion_tokens: z.number().min(1).max(8192).default(1024),
+  top_p: z.number().min(0).max(1).default(1),
+  stream: z.boolean().default(true),
+  stop: z.union([z.string(), z.array(z.string()), z.null()]).optional(),
 });
 
 export type PostRequestBody = z.infer<typeof postRequestBodySchema>;
