@@ -219,36 +219,33 @@ export async function POST(request: Request) {
 
     const streamResponse = createUIMessageStream({
       execute: ({ writer: dataStream }) => {
-        // Configure tools based on model capabilities
-        const toolsConfig = selectedChatModel === 'meta-llama/llama-guard-4-12b'
-          ? {
-              experimental_activeTools: [
-                "getWeather",
-                "createDocument",
-                "updateDocument",
-                "requestSuggestions",
-              ] as ("getWeather" | "createDocument" | "updateDocument" | "requestSuggestions")[],
-              tools: {
-                getWeather,
-                createDocument: createDocument({ session, dataStream }),
-                updateDocument: updateDocument({ session, dataStream }),
-                requestSuggestions: requestSuggestions({ session, dataStream }),
-              },
-            }
-          : {
-              experimental_activeTools: [] as string[],
-              tools: {},
-            };
+        const toolsConfig = {
+          experimental_activeTools:
+            selectedChatModel === 'meta-llama/llama-guard-4-12b'
+              ? ([
+                  "getWeather",
+                  "createDocument",
+                  "updateDocument",
+                  "requestSuggestions",
+                ] as const)
+              : [],
+          tools: {
+            getWeather,
+            createDocument: createDocument({ session, dataStream }),
+            updateDocument: updateDocument({ session, dataStream }),
+            requestSuggestions: requestSuggestions({ session, dataStream }),
+          },
+        };
 
         const result = streamText({
           model: myProvider.languageModel(selectedChatModel),
           system: systemPrompt({ selectedChatModel, requestHints }),
           messages: convertToModelMessages(allUIMessages),
           ...toolsConfig,
-          experimental_transform: smoothStream({ chunking: 'word' }) as any,
+          experimental_transform: smoothStream({ chunking: "word" }) as any,
           experimental_telemetry: {
             isEnabled: isProductionEnvironment,
-            functionId: 'stream-text',
+            functionId: "stream-text",
           },
         });
 
