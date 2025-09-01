@@ -227,7 +227,7 @@ export async function POST(request: Request) {
                 'createDocument',
                 'updateDocument',
                 'requestSuggestions',
-              ] as string[],
+              ] as const,
               tools: {
                 getWeather,
                 createDocument: createDocument({ session, dataStream }),
