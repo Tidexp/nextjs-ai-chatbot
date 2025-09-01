@@ -59,10 +59,15 @@ export const systemPrompt = ({
 }) => {
   const requestPrompt = getRequestPromptFromHints(requestHints);
 
-  if (selectedChatModel === 'chat-model-reasoning') {
+  if (selectedChatModel === 'gemma2-9b-it') {
+    // Gemma chỉ dùng regular, không artifacts
     return `${regularPrompt}\n\n${requestPrompt}`;
-  } else {
+  } else if (selectedChatModel === 'meta-llama/llama-guard-4-12b') {
+    // LLaMA dùng cả artifacts
     return `${regularPrompt}\n\n${requestPrompt}\n\n${artifactsPrompt}`;
+  } else {
+    // fallback: behave như regular thôi
+    return `${regularPrompt}\n\n${requestPrompt}`;
   }
 };
 
