@@ -36,6 +36,7 @@ import { after } from 'next/server';
 import { ChatSDKError } from '@/lib/errors';
 import type { ChatMessage } from '@/lib/types';
 import type { ChatModel } from '@/lib/ai/models';
+import { chatModels, DEFAULT_CHAT_MODEL } from '@/lib/ai/models';
 import type { VisibilityType } from '@/components/visibility-selector';
 
 export const maxDuration = 60;
@@ -62,92 +63,265 @@ export function getStreamContext() {
   return globalStreamContext;
 }
 
+// Helper function to convert schema messages to internal ChatMessage format
+function convertSchemaMessagesToUIMessages(messages: PostRequestBody['messages']): ChatMessage[] {
+  return messages.map((msg) => ({
+    id: generateUUID(),
+    role: msg.role,
+    parts: msg.content.map((part) => {
+      if (part.type === 'text') {
+        return {
+          type: 'text' as const,
+          text: part.text,
+        };
+      } else {
+        return {
+          type: 'image' as const,
+          image: part.url,
+        };
+      }
+    }),
+    createdAt: new Date(),
+  }));
+}
+
+// Helper function to extract chat ID from messages or generate new one
+function extractOrGenerateChatId(messages: PostRequestBody['messages']): string {
+  // Try to find chat ID in system message or generate new one
+  const systemMessage = messages.find(msg => msg.role === 'system');
+  // You might want to encode chat ID in system message or use a different strategy
+  return generateUUID();
+}
+
 export async function POST(request: Request) {
   let requestBody: PostRequestBody;
 
   try {
     const json = await request.json();
     requestBody = postRequestBodySchema.parse(json);
-  } catch (_) {
+  } catch (error) {
     return new ChatSDKError('bad_request:api').toResponse();
   }
 
-  const session = await auth();
-  if (!session?.user) {
-    return new ChatSDKError('unauthorized:chat').toResponse();
-  }
+  try {
+    const {
+      model: requestedModel,
+      messages,
+      temperature,
+      max_completion_tokens,
+      top_p,
+      stream,
+      stop,
+    } = requestBody;
 
-  const userType: UserType = session.user.type;
-  const messageCount = await getMessageCountByUserId({
-    id: session.user.id,
-    differenceInHours: 24,
-  });
+    const session = await auth();
 
-  if (messageCount > entitlementsByUserType[userType].maxMessagesPerDay) {
-    return new ChatSDKError('rate_limit:chat').toResponse();
-  }
+    if (!session?.user) {
+      return new ChatSDKError('unauthorized:chat').toResponse();
+    }
 
-  // Giờ schema mới có `messages` array
-  const { model, messages, temperature, max_completion_tokens, top_p, stream, stop } = requestBody;
+    const userType: UserType = session.user.type;
+    const userEntitlements = entitlementsByUserType[userType];
 
-  // Tạo chat mới (hoặc lấy chat cũ) - nếu muốn dùng chatId thì phải truyền thêm client
-  const chatId = generateUUID(); // hoặc lấy từ DB nếu có
-  await saveChat({
-    id: chatId,
-    userId: session.user.id,
-    title: messages[0].content.slice(0, 50), // tự generate title từ message đầu
-    visibility: 'private', // default, nếu không có selectedVisibilityType
-  });
+    // Validate the requested model exists
+    const validModel = chatModels.find(model => model.id === requestedModel);
+    if (!validModel) {
+      return new ChatSDKError('bad_request:invalid_model').toResponse();
+    }
 
-  // Lưu messages vào DB
-  await saveMessages({
-    messages: messages.map((msg) => ({
-      chatId,
-      id: generateUUID(),
-      role: msg.role,
-      parts: [{ type: 'text', text: msg.content }], // ép kiểu parts từ content string
-      attachments: [],
-      createdAt: new Date(),
-    })),
-  });
+    // Check if user can use the requested model
+    if (!userEntitlements.availableChatModelIds.includes(requestedModel)) {
+      return new ChatSDKError('forbidden:model').toResponse();
+    }
 
-  // Chuẩn bị stream
-  const uiMessages = convertToUIMessages(
-    messages.map(msg => ({
-      id: generateUUID(),
-      chatId, // thêm chatId từ biến trước
-      role: msg.role,
-      parts: [{ type: 'text', text: msg.content }],
-      attachments: [], // default rỗng
-      createdAt: new Date(), // timestamp hiện tại
-    }))
-  );
+    const selectedChatModel = requestedModel;
 
-  const streamId = generateUUID();
-  await createStreamId({ streamId, chatId });
+    const messageCount = await getMessageCountByUserId({
+      id: session.user.id,
+      differenceInHours: 24,
+    });
 
-  const uiMessageStream = createUIMessageStream({
-    execute: ({ writer: dataStream }) => {
-      const result = streamText({
-        model: myProvider.languageModel(model),
-        system: systemPrompt({ selectedChatModel: model }),
-        messages: convertToModelMessages(uiMessages),
+    if (messageCount >= userEntitlements.maxMessagesPerDay) {
+      return new ChatSDKError('rate_limit:chat').toResponse();
+    }
+
+    // Extract or generate chat ID
+    const chatId = extractOrGenerateChatId(messages);
+    
+    // Convert schema messages to UI messages
+    const uiMessages = convertSchemaMessagesToUIMessages(messages);
+    
+    // Get the last user message for title generation
+    const lastUserMessage = uiMessages.filter(msg => msg.role === 'user').pop();
+
+    const chat = await getChatById({ id: chatId });
+
+    if (!chat && lastUserMessage) {
+      const title = await generateTitleFromUserMessage({
+        message: lastUserMessage,
       });
-      result.consumeStream();
-      dataStream.merge(result.toUIMessageStream());
-    },
-    generateId: generateUUID,
-  });
 
-  const streamContext = getStreamContext();
-  if (streamContext) {
-    return new Response(
-      await streamContext.resumableStream(streamId, () =>
-        uiMessageStream.pipeThrough(new JsonToSseTransformStream()),
-      ),
+      await saveChat({
+        id: chatId,
+        userId: session.user.id,
+        title,
+        visibility: 'private' as VisibilityType, // Default visibility
+      });
+    } else if (chat) {
+      if (chat.userId !== session.user.id) {
+        return new ChatSDKError('forbidden:chat').toResponse();
+      }
+    }
+
+    const messagesFromDb = await getMessagesByChatId({ id: chatId });
+    const existingUIMessages = convertToUIMessages(messagesFromDb);
+    
+    // Merge existing messages with new messages, avoiding duplicates
+    const allUIMessages = [...existingUIMessages];
+    
+    // Only add new user messages that aren't already in the database
+    const newUserMessages = uiMessages.filter(msg => 
+      msg.role === 'user' && !existingUIMessages.some(existing => 
+        existing.role === 'user' && 
+        JSON.stringify(existing.parts) === JSON.stringify(msg.parts)
+      )
     );
-  } else {
-    return new Response(uiMessageStream.pipeThrough(new JsonToSseTransformStream()));
+
+    allUIMessages.push(...newUserMessages);
+
+    const { longitude, latitude, city, country } = geolocation(request);
+
+    const requestHints: RequestHints = {
+      longitude,
+      latitude,
+      city,
+      country,
+    };
+
+    // Save new user messages to database
+    if (newUserMessages.length > 0) {
+      await saveMessages({
+        messages: newUserMessages.map((message) => ({
+          chatId,
+          id: message.id,
+          role: 'user',
+          parts: message.parts,
+          attachments: [],
+          createdAt: new Date(),
+        })),
+      });
+    }
+
+    const streamId = generateUUID();
+    await createStreamId({ streamId, chatId });
+
+    const streamResponse = createUIMessageStream({
+      execute: ({ writer: dataStream }) => {
+        // Configure tools based on model capabilities
+        const toolsConfig = selectedChatModel === 'meta-llama/llama-guard-4-12b' 
+          ? {
+              experimental_activeTools: [
+                'getWeather',
+                'createDocument', 
+                'updateDocument',
+                'requestSuggestions',
+              ],
+              tools: {
+                getWeather,
+                createDocument: createDocument({ session, dataStream }),
+                updateDocument: updateDocument({ session, dataStream }),
+                requestSuggestions: requestSuggestions({
+                  session,
+                  dataStream,
+                }),
+              },
+            }
+          : {
+              experimental_activeTools: [],
+              tools: {},
+            };
+
+        const result = streamText({
+          model: myProvider.languageModel(selectedChatModel),
+          system: systemPrompt({ selectedChatModel, requestHints }),
+          messages: convertToModelMessages(allUIMessages),
+          temperature,
+          maxTokens: max_completion_tokens,
+          topP: top_p,
+          stopSequences: stop ? (Array.isArray(stop) ? stop : [stop]) : undefined,
+          stopWhen: stepCountIs(5),
+          ...toolsConfig,
+          experimental_transform: smoothStream({ chunking: 'word' }),
+          experimental_telemetry: {
+            isEnabled: isProductionEnvironment,
+            functionId: 'stream-text',
+          },
+        });
+
+        result.consumeStream();
+
+        dataStream.merge(
+          result.toUIMessageStream({
+            sendReasoning: true,
+          }),
+        );
+      },
+      generateId: generateUUID,
+      onFinish: async ({ messages }) => {
+        await saveMessages({
+          messages: messages.map((message) => ({
+            id: message.id,
+            role: message.role,
+            parts: message.parts,
+            createdAt: new Date(),
+            attachments: [],
+            chatId,
+          })),
+        });
+      },
+      onError: () => {
+        return 'Oops, an error occurred!';
+      },
+    });
+
+    const streamContext = getStreamContext();
+
+    if (stream) {
+      if (streamContext) {
+        return new Response(
+          await streamContext.resumableStream(streamId, () =>
+            streamResponse.pipeThrough(new JsonToSseTransformStream()),
+          ),
+        );
+      } else {
+        return new Response(streamResponse.pipeThrough(new JsonToSseTransformStream()));
+      }
+    } else {
+      // Handle non-streaming response
+      const chunks: any[] = [];
+      const reader = streamResponse.getReader();
+      
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          chunks.push(value);
+        }
+        
+        // Return the final response as JSON
+        const finalMessage = chunks[chunks.length - 1];
+        return Response.json(finalMessage);
+      } finally {
+        reader.releaseLock();
+      }
+    }
+  } catch (error) {
+    if (error instanceof ChatSDKError) {
+      return error.toResponse();
+    }
+    
+    console.error('Unexpected error:', error);
+    return new ChatSDKError('internal_server_error:chat').toResponse();
   }
 }
 
@@ -166,6 +340,10 @@ export async function DELETE(request: Request) {
   }
 
   const chat = await getChatById({ id });
+
+  if (!chat) {
+    return new ChatSDKError('not_found:chat').toResponse();
+  }
 
   if (chat.userId !== session.user.id) {
     return new ChatSDKError('forbidden:chat').toResponse();
