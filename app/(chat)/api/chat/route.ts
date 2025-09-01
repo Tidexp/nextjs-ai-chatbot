@@ -1,5 +1,4 @@
 import {
-  convertToModelMessages,
   createUIMessageStream,
   JsonToSseTransformStream,
   smoothStream,
@@ -10,7 +9,6 @@ import { auth, type UserType } from '@/app/(auth)/auth';
 import { type RequestHints, systemPrompt } from '@/lib/ai/prompts';
 import {
   createStreamId,
-  deleteChatById,
   getChatById,
   getMessageCountByUserId,
   getMessagesByChatId,
@@ -34,9 +32,8 @@ import {
 } from 'resumable-stream';
 import { after } from 'next/server';
 import { ChatSDKError } from '@/lib/errors';
-import type { ChatMessage } from '@/lib/types';
+import type { ChatMessage, UIMessagePart } from '@/lib/types';
 import type { ChatModel } from '@/lib/ai/models';
-import type { VisibilityType } from '@/components/visibility-selector';
 
 export const maxDuration = 60;
 
@@ -45,21 +42,30 @@ let globalStreamContext: ResumableStreamContext | null = null;
 export function getStreamContext() {
   if (!globalStreamContext) {
     try {
-      globalStreamContext = createResumableStreamContext({
-        waitUntil: after,
-      });
+      globalStreamContext = createResumableStreamContext({ waitUntil: after });
     } catch (error: any) {
       if (error.message.includes('REDIS_URL')) {
-        console.log(
-          ' > Resumable streams are disabled due to missing REDIS_URL',
-        );
+        console.log('> Resumable streams are disabled due to missing REDIS_URL');
       } else {
         console.error(error);
       }
     }
   }
-
   return globalStreamContext;
+}
+
+// Chuyển UI messages (có parts[]) sang model messages (string)
+function convertToModelMessages(uiMessages: ChatMessage[]) {
+  return uiMessages.map((msg) => ({
+    role: msg.role,
+    content: msg.parts
+      .map((part: UIMessagePart) =>
+        part.type === 'text'
+          ? part.text
+          : `[${part.mediaType}:${part.url}]`
+      )
+      .join('\n'),
+  }));
 }
 
 export async function POST(request: Request) {
@@ -74,17 +80,17 @@ export async function POST(request: Request) {
 
   try {
     const {
-      model,
+      model: selectedChatModel,
       messages,
       temperature,
       max_completion_tokens,
       top_p,
       stream,
       stop,
+      // nếu muốn client gửi visibility, có thể thêm vào schema
     } = requestBody;
 
     const session = await auth();
-
     if (!session?.user) {
       return new ChatSDKError('unauthorized:chat').toResponse();
     }
@@ -100,50 +106,48 @@ export async function POST(request: Request) {
       return new ChatSDKError('rate_limit:chat').toResponse();
     }
 
-    const chat = await getChatById({ id });
-
+    // Tạo/gọi chat ID (giả sử gửi từ client hoặc generate UUID)
+    const chatId = generateUUID();
+    let chat = await getChatById({ id: chatId });
     if (!chat) {
       const title = await generateTitleFromUserMessage({
-        message,
+        message: messages[0], // lấy message đầu làm title
       });
-
       await saveChat({
-        id,
+        id: chatId,
         userId: session.user.id,
         title,
-        visibility: selectedVisibilityType,
+        visibility: 'private', // hoặc từ client
       });
-    } else {
-      if (chat.userId !== session.user.id) {
-        return new ChatSDKError('forbidden:chat').toResponse();
-      }
     }
 
-    const messagesFromDb = await getMessagesByChatId({ id });
-    const uiMessages = [...convertToUIMessages(messagesFromDb), message];
+    const messagesFromDb = await getMessagesByChatId({ id: chatId });
+    const uiMessages = [
+      ...convertToUIMessages(messagesFromDb),
+      ...messages.map((msg) => ({
+        id: generateUUID(),
+        role: msg.role,
+        parts: msg.content,
+        metadata: { createdAt: new Date().toISOString() },
+      })),
+    ];
 
     const { longitude, latitude, city, country } = geolocation(request);
-
-    const requestHints: RequestHints = {
-      longitude,
-      latitude,
-      city,
-      country,
-    };
+    const requestHints: RequestHints = { longitude, latitude, city, country };
 
     await saveMessages({
       messages: messages.map((msg) => ({
-        chatId: id,
-        id: generateUUID(), // hoặc lấy msg.id nếu mày giữ lại
+        chatId,
+        id: generateUUID(),
         role: msg.role,
-        parts: msg.content, // <-- content chính là parts[]
+        parts: msg.content,
         attachments: [],
         createdAt: new Date(),
       })),
     });
 
     const streamId = generateUUID();
-    await createStreamId({ streamId, chatId: id });
+    await createStreamId({ streamId, chatId });
 
     const stream = createUIMessageStream({
       execute: ({ writer: dataStream }) => {
@@ -155,21 +159,13 @@ export async function POST(request: Request) {
           experimental_activeTools:
             selectedChatModel === 'chat-model-reasoning'
               ? []
-              : [
-                  'getWeather',
-                  'createDocument',
-                  'updateDocument',
-                  'requestSuggestions',
-                ],
+              : ['getWeather', 'createDocument', 'updateDocument', 'requestSuggestions'],
           experimental_transform: smoothStream({ chunking: 'word' }),
           tools: {
             getWeather,
             createDocument: createDocument({ session, dataStream }),
             updateDocument: updateDocument({ session, dataStream }),
-            requestSuggestions: requestSuggestions({
-              session,
-              dataStream,
-            }),
+            requestSuggestions: requestSuggestions({ session, dataStream }),
           },
           experimental_telemetry: {
             isEnabled: isProductionEnvironment,
@@ -182,7 +178,7 @@ export async function POST(request: Request) {
         dataStream.merge(
           result.toUIMessageStream({
             sendReasoning: true,
-          }),
+          })
         );
       },
       generateId: generateUUID,
@@ -194,22 +190,19 @@ export async function POST(request: Request) {
             parts: message.parts,
             createdAt: new Date(),
             attachments: [],
-            chatId: id,
+            chatId,
           })),
         });
       },
-      onError: () => {
-        return 'Oops, an error occurred!';
-      },
+      onError: () => 'Oops, an error occurred!',
     });
 
     const streamContext = getStreamContext();
-
     if (streamContext) {
       return new Response(
         await streamContext.resumableStream(streamId, () =>
-          stream.pipeThrough(new JsonToSseTransformStream()),
-        ),
+          stream.pipeThrough(new JsonToSseTransformStream())
+        )
       );
     } else {
       return new Response(stream.pipeThrough(new JsonToSseTransformStream()));
@@ -218,6 +211,8 @@ export async function POST(request: Request) {
     if (error instanceof ChatSDKError) {
       return error.toResponse();
     }
+    console.error(error);
+    return new ChatSDKError('internal_error').toResponse();
   }
 }
 
