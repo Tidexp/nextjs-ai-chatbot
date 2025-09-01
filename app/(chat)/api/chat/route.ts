@@ -185,7 +185,7 @@ export async function POST(request: Request) {
     const newUserMessages = uiMessages.filter(msg => 
       msg.role === 'user' && !existingUIMessages.some(existing => 
         existing.role === 'user' && 
-        JSON.stringify(existing.content) === JSON.stringify(msg.content)
+        JSON.stringify((existing as any).content || (existing as any).parts || []) === JSON.stringify(msg.content)
       )
     ) as ChatMessage[];
 
@@ -207,7 +207,7 @@ export async function POST(request: Request) {
           chatId,
           id: message.id,
           role: 'user',
-          parts: message.content || message.parts || [],
+          parts: (message as any).content || (message as any).parts || [],
           attachments: [],
           createdAt: new Date(),
         })),
