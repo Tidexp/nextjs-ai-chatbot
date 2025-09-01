@@ -128,12 +128,12 @@ export async function POST(request: Request) {
     // Validate the requested model exists
     const validModel = chatModels.find(model => model.id === requestedModel);
     if (!validModel) {
-      return new ChatSDKError('bad_request:invalid_model').toResponse();
+      return new ChatSDKError('bad_request:api').toResponse();
     }
 
     // Check if user can use the requested model
     if (!userEntitlements.availableChatModelIds.includes(requestedModel)) {
-      return new ChatSDKError('forbidden:model').toResponse();
+      return new ChatSDKError('forbidden:chat').toResponse();
     }
 
     const selectedChatModel = requestedModel;
@@ -323,7 +323,7 @@ export async function POST(request: Request) {
     }
     
     console.error('Unexpected error:', error);
-    return new ChatSDKError('internal_server_error:chat').toResponse();
+    return new ChatSDKError('bad_request:api').toResponse();
   }
 }
 
@@ -344,7 +344,7 @@ export async function DELETE(request: Request) {
   const chat = await getChatById({ id });
 
   if (!chat) {
-    return new ChatSDKError('not_found:chat').toResponse();
+    return new ChatSDKError('bad_request:api').toResponse();
   }
 
   if (chat.userId !== session.user.id) {
