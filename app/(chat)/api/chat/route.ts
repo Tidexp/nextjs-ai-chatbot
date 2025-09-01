@@ -69,7 +69,7 @@ function convertSchemaMessagesToUIMessages(messages: PostRequestBody['messages']
   return messages.map((msg) => ({
     id: generateUUID(),
     role: msg.role,
-    content: msg.content.map((part) => {
+    parts: msg.content.map((part) => {
       if (part.type === 'text') {
         return {
           type: 'text' as const,
@@ -185,7 +185,7 @@ export async function POST(request: Request) {
     const newUserMessages = uiMessages.filter(msg => 
       msg.role === 'user' && !existingUIMessages.some(existing => 
         existing.role === 'user' && 
-        JSON.stringify(existing.content) === JSON.stringify(msg.content)
+        JSON.stringify(existing.parts) === JSON.stringify(msg.parts)
       )
     ) as ChatMessage[];
 
@@ -207,7 +207,7 @@ export async function POST(request: Request) {
           chatId,
           id: message.id,
           role: 'user',
-          parts: message.content,
+          parts: message.parts,
           attachments: [],
           createdAt: new Date(),
         })),
@@ -274,7 +274,7 @@ export async function POST(request: Request) {
           messages: messages.map((message) => ({
             id: message.id,
             role: message.role,
-            parts: message.content,
+            parts: message.parts,
             createdAt: new Date(),
             attachments: [],
             chatId,
