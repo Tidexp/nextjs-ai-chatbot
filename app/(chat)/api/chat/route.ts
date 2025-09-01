@@ -248,7 +248,7 @@ export async function POST(request: Request) {
           system: systemPrompt({ selectedChatModel, requestHints }),
           messages: convertToModelMessages(allUIMessages),
           temperature,
-          maxTokens: max_completion_tokens,
+          maxCompletionTokens: max_completion_tokens,
           topP: top_p,
           stopSequences: stop ? (Array.isArray(stop) ? stop : [stop]) : undefined,
           stopWhen: stepCountIs(5),
