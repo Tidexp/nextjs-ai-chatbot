@@ -224,10 +224,10 @@ export async function POST(request: Request) {
           ? {
               experimental_activeTools: [
                 'getWeather',
-                'createDocument', 
+                'createDocument',
                 'updateDocument',
                 'requestSuggestions',
-              ],
+              ] as ("getWeather" | "createDocument" | "updateDocument" | "requestSuggestions")[],
               tools: {
                 getWeather,
                 createDocument: createDocument({ session, dataStream }),
