@@ -65,11 +65,11 @@ export function getStreamContext() {
 }
 
 // Helper function to convert schema messages to internal ChatMessage format
-function convertSchemaMessagesToUIMessages(messages: PostRequestBody['messages']): UIMessage[] {
+function convertSchemaMessagesToUIMessages(messages: PostRequestBody['messages']): any[] {
   return messages.map((msg) => ({
     id: generateUUID(),
     role: msg.role,
-    parts: msg.content.map((part) => {
+    content: msg.content.map((part) => {
       if (part.type === 'text') {
         return {
           type: 'text' as const,
@@ -185,7 +185,7 @@ export async function POST(request: Request) {
     const newUserMessages = uiMessages.filter(msg => 
       msg.role === 'user' && !existingUIMessages.some(existing => 
         existing.role === 'user' && 
-        JSON.stringify(existing.parts) === JSON.stringify(msg.parts)
+        JSON.stringify(existing.content) === JSON.stringify(msg.content)
       )
     ) as ChatMessage[];
 
@@ -207,7 +207,7 @@ export async function POST(request: Request) {
           chatId,
           id: message.id,
           role: 'user',
-          parts: message.parts,
+          parts: message.content || message.parts || [],
           attachments: [],
           createdAt: new Date(),
         })),
@@ -274,7 +274,7 @@ export async function POST(request: Request) {
           messages: messages.map((message) => ({
             id: message.id,
             role: message.role,
-            parts: message.parts,
+            parts: (message as any).content || (message as any).parts || [],
             createdAt: new Date(),
             attachments: [],
             chatId,
