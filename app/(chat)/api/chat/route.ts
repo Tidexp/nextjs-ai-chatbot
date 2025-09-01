@@ -74,15 +74,13 @@ export async function POST(request: Request) {
 
   try {
     const {
-      id,
-      message,
-      selectedChatModel,
-      selectedVisibilityType,
-    }: {
-      id: string;
-      message: ChatMessage;
-      selectedChatModel: ChatModel['id'];
-      selectedVisibilityType: VisibilityType;
+      model,
+      messages,
+      temperature,
+      max_completion_tokens,
+      top_p,
+      stream,
+      stop,
     } = requestBody;
 
     const session = await auth();
@@ -134,16 +132,14 @@ export async function POST(request: Request) {
     };
 
     await saveMessages({
-      messages: [
-        {
-          chatId: id,
-          id: message.id,
-          role: 'user',
-          parts: message.parts,
-          attachments: [],
-          createdAt: new Date(),
-        },
-      ],
+      messages: messages.map((msg) => ({
+        chatId: id,
+        id: generateUUID(), // hoặc lấy msg.id nếu mày giữ lại
+        role: msg.role,
+        parts: msg.content, // <-- content chính là parts[]
+        attachments: [],
+        createdAt: new Date(),
+      })),
     });
 
     const streamId = generateUUID();
