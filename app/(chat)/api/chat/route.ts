@@ -69,20 +69,28 @@ function convertSchemaMessagesToUIMessages(messages: PostRequestBody['messages']
   return messages.map((msg) => ({
     id: generateUUID(),
     role: msg.role,
-    content: msg.content.map((part) => {
-      if (part.type === 'text') {
-        return {
-          type: 'text' as const,
-          text: part.text,
-        };
-      } else {
-        // For file parts, map to image format
-        return {
-          type: 'image' as const,
-          image: part.url,
-        };
-      }
-    }),
+    content: Array.isArray(msg.content)
+      ? msg.content.map((part) => {
+          if (part.type === 'text') {
+            return {
+              type: 'text' as const,
+              text: part.text,
+            };
+          } else {
+            // For file parts, map to image format
+            return {
+              type: 'image' as const,
+              image: part.url,
+            };
+          }
+        })
+      : // Fallback: treat as single text part if content is string or non-array
+        [
+          {
+            type: 'text' as const,
+            text: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content),
+          },
+        ],
     createdAt: new Date().toISOString(),
   }));
 }
