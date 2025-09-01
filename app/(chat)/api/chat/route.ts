@@ -112,16 +112,20 @@ export async function POST(request: Request) {
   });
 
   // Chuẩn bị stream
-  const uiMessages = convertToUIMessages(messages.map(msg => ({
-    id: generateUUID(),
-    role: msg.role,
-    parts: [{ type: 'text', text: msg.content }],
-  })));
+  const uiMessages = convertToUIMessages(
+    messages.map(msg => ({
+      id: generateUUID(),
+      chatId, // thêm chatId từ biến trước
+      role: msg.role,
+      parts: [{ type: 'text', text: msg.content }],
+      attachments: [], // default rỗng
+      createdAt: new Date(), // timestamp hiện tại
+    }))
+  );
 
   const streamId = generateUUID();
   await createStreamId({ streamId, chatId });
 
-  // const stream = createUIMessageStream({...});
   const uiMessageStream = createUIMessageStream({
     execute: ({ writer: dataStream }) => {
       const result = streamText({
