@@ -59,11 +59,20 @@ function convertToModelMessages(uiMessages: ChatMessage[]) {
   return uiMessages.map((msg) => ({
     role: msg.role,
     content: msg.parts
-      .map((part) =>
-        part.type === 'text'
-          ? part.text
-          : `[${part.mediaType}:${part.url}]`
-      )
+      .map((part) => {
+        if (part.type === 'text') {
+          return part.text;
+        }
+
+        // Chỉ lấy những part có mediaType và url
+        if ('mediaType' in part && 'url' in part) {
+          return `[${part.mediaType}:${part.url}]`;
+        }
+
+        // Mặc định bỏ qua các part không phải text và không có mediaType
+        return '';
+      })
+      .filter(Boolean) // loại bỏ các string rỗng
       .join('\n'),
   }));
 }
