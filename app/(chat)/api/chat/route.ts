@@ -72,156 +72,77 @@ export async function POST(request: Request) {
     return new ChatSDKError('bad_request:api').toResponse();
   }
 
-  try {
-    const {
-      id,
-      message,
-      selectedChatModel,
-      selectedVisibilityType,
-    }: {
-      id: string;
-      message: ChatMessage;
-      selectedChatModel: ChatModel['id'];
-      selectedVisibilityType: VisibilityType;
-    } = requestBody;
+  const session = await auth();
+  if (!session?.user) {
+    return new ChatSDKError('unauthorized:chat').toResponse();
+  }
 
-    const session = await auth();
+  const userType: UserType = session.user.type;
+  const messageCount = await getMessageCountByUserId({
+    id: session.user.id,
+    differenceInHours: 24,
+  });
 
-    if (!session?.user) {
-      return new ChatSDKError('unauthorized:chat').toResponse();
-    }
+  if (messageCount > entitlementsByUserType[userType].maxMessagesPerDay) {
+    return new ChatSDKError('rate_limit:chat').toResponse();
+  }
 
-    const userType: UserType = session.user.type;
+  // Giờ schema mới có `messages` array
+  const { model, messages, temperature, max_completion_tokens, top_p, stream, stop } = requestBody;
 
-    const messageCount = await getMessageCountByUserId({
-      id: session.user.id,
-      differenceInHours: 24,
-    });
+  // Tạo chat mới (hoặc lấy chat cũ) - nếu muốn dùng chatId thì phải truyền thêm client
+  const chatId = generateUUID(); // hoặc lấy từ DB nếu có
+  await saveChat({
+    id: chatId,
+    userId: session.user.id,
+    title: messages[0].content.slice(0, 50), // tự generate title từ message đầu
+    visibility: 'private', // default, nếu không có selectedVisibilityType
+  });
 
-    if (messageCount > entitlementsByUserType[userType].maxMessagesPerDay) {
-      return new ChatSDKError('rate_limit:chat').toResponse();
-    }
+  // Lưu messages vào DB
+  await saveMessages({
+    messages: messages.map((msg) => ({
+      chatId,
+      id: generateUUID(),
+      role: msg.role,
+      parts: [{ type: 'text', text: msg.content }], // ép kiểu parts từ content string
+      attachments: [],
+      createdAt: new Date(),
+    })),
+  });
 
-    const chat = await getChatById({ id });
+  // Chuẩn bị stream
+  const uiMessages = convertToUIMessages(messages.map(msg => ({
+    id: generateUUID(),
+    role: msg.role,
+    parts: [{ type: 'text', text: msg.content }],
+  })));
 
-    if (!chat) {
-      const title = await generateTitleFromUserMessage({
-        message,
+  const streamId = generateUUID();
+  await createStreamId({ streamId, chatId });
+
+  const stream = createUIMessageStream({
+    execute: ({ writer: dataStream }) => {
+      const result = streamText({
+        model: myProvider.languageModel(model),
+        system: systemPrompt({ selectedChatModel: model }),
+        messages: convertToModelMessages(uiMessages),
       });
+      result.consumeStream();
+      dataStream.merge(result.toUIMessageStream());
+    },
+    generateId: generateUUID,
+  });
 
-      await saveChat({
-        id,
-        userId: session.user.id,
-        title,
-        visibility: selectedVisibilityType,
-      });
-    } else {
-      if (chat.userId !== session.user.id) {
-        return new ChatSDKError('forbidden:chat').toResponse();
-      }
-    }
-
-    const messagesFromDb = await getMessagesByChatId({ id });
-    const uiMessages = [...convertToUIMessages(messagesFromDb), message];
-
-    const { longitude, latitude, city, country } = geolocation(request);
-
-    const requestHints: RequestHints = {
-      longitude,
-      latitude,
-      city,
-      country,
-    };
-
-    await saveMessages({
-      messages: [
-        {
-          chatId: id,
-          id: message.id,
-          role: 'user',
-          parts: message.parts,
-          attachments: [],
-          createdAt: new Date(),
-        },
-      ],
-    });
-
-    const streamId = generateUUID();
-    await createStreamId({ streamId, chatId: id });
-
-    const stream = createUIMessageStream({
-      execute: ({ writer: dataStream }) => {
-        const result = streamText({
-          model: myProvider.languageModel(selectedChatModel),
-          system: systemPrompt({ selectedChatModel, requestHints }),
-          messages: convertToModelMessages(uiMessages),
-          stopWhen: stepCountIs(5),
-          experimental_activeTools:
-            selectedChatModel === 'chat-model-reasoning'
-              ? []
-              : [
-                  'getWeather',
-                  'createDocument',
-                  'updateDocument',
-                  'requestSuggestions',
-                ],
-          experimental_transform: smoothStream({ chunking: 'word' }),
-          tools: {
-            getWeather,
-            createDocument: createDocument({ session, dataStream }),
-            updateDocument: updateDocument({ session, dataStream }),
-            requestSuggestions: requestSuggestions({
-              session,
-              dataStream,
-            }),
-          },
-          experimental_telemetry: {
-            isEnabled: isProductionEnvironment,
-            functionId: 'stream-text',
-          },
-        });
-
-        result.consumeStream();
-
-        dataStream.merge(
-          result.toUIMessageStream({
-            sendReasoning: true,
-          }),
-        );
-      },
-      generateId: generateUUID,
-      onFinish: async ({ messages }) => {
-        await saveMessages({
-          messages: messages.map((message) => ({
-            id: message.id,
-            role: message.role,
-            parts: message.parts,
-            createdAt: new Date(),
-            attachments: [],
-            chatId: id,
-          })),
-        });
-      },
-      onError: () => {
-        return 'Oops, an error occurred!';
-      },
-    });
-
-    const streamContext = getStreamContext();
-
-    if (streamContext) {
-      return new Response(
-        await streamContext.resumableStream(streamId, () =>
-          stream.pipeThrough(new JsonToSseTransformStream()),
-        ),
-      );
-    } else {
-      return new Response(stream.pipeThrough(new JsonToSseTransformStream()));
-    }
-  } catch (error) {
-    if (error instanceof ChatSDKError) {
-      return error.toResponse();
-    }
+  const streamContext = getStreamContext();
+  if (streamContext) {
+    return new Response(
+      await streamContext.resumableStream(streamId, () =>
+        stream.pipeThrough(new JsonToSseTransformStream()),
+      ),
+    );
+  } else {
+    return new Response(stream.pipeThrough(new JsonToSseTransformStream()));
   }
 }
 
