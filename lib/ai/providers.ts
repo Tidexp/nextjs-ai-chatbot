@@ -1,5 +1,5 @@
 import { customProvider } from 'ai';
-import { openai } from '@ai-sdk/openai'; // dùng Groq API theo chuẩn OpenAI
+import { openai } from 'ai/openai'; // dùng Groq API theo chuẩn OpenAI
 import { isTestEnvironment } from '../constants';
 import {
   artifactModel,
