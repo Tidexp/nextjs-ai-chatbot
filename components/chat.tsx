@@ -67,11 +67,18 @@ export function Chat({
       api: '/api/chat',
       fetch: fetchWithErrorHandlers,
       prepareSendMessagesRequest({ messages, id, body }) {
+        const mappedMessages = messages.map((m) => ({
+          role: m.role,
+          content: m.parts
+            ?.map((p) => (p.type === 'text' ? p.text : ''))
+            .join('\n') || '',
+        }));
+
         return {
           body: {
-            model: initialChatModel,                 
-            messages,                               
-            ...body,                                  
+            model: initialChatModel,
+            messages: mappedMessages,
+            ...body,
           },
         };
       },
