@@ -167,21 +167,17 @@ export async function POST(request: Request) {
 
     const chat = await getChatById({ id: chatId });
 
-    if (!chat && lastUserMessage) {
-      const title = await generateTitleFromUserMessage({
-        message: lastUserMessage,
-      });
-
-      await saveChat({
-        id: chatId,
-        userId: session.user.id,
-        title,
-        visibility: 'private' as VisibilityType, // Default visibility
-      });
+    if (!chat) {
+        await saveChat({
+            id: chatId,
+            userId: session.user.id,
+            title: 'New Chat', // Or generate a simple title like 'Chat ' + new Date().toISOString()
+            visibility: 'private' as VisibilityType,
+        });
     } else if (chat) {
-      if (chat.userId !== session.user.id) {
-        return new ChatSDKError('forbidden:chat').toResponse();
-      }
+        if (chat.userId !== session.user.id) {
+            return new ChatSDKError('forbidden:chat').toResponse();
+        }
     }
 
     const messagesFromDb = await getMessagesByChatId({ id: chatId });
