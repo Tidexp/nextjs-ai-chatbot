@@ -69,11 +69,9 @@ export function Chat({
       prepareSendMessagesRequest({ messages, id, body }) {
         return {
           body: {
-            id,
-            message: messages.at(-1),
-            selectedChatModel: initialChatModel,
-            selectedVisibilityType: visibilityType,
-            ...body,
+            model: initialChatModel,                 
+            messages,                               
+            ...body,                                  
           },
         };
       },
