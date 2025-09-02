@@ -1,5 +1,5 @@
 import { customProvider } from 'ai';
-import { Groq } from 'groq-sdk';
+import { groq } from '@ai-sdk/groq';
 import { isTestEnvironment } from '../constants';
 import {
   artifactModel,
