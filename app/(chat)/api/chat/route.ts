@@ -108,9 +108,11 @@ export async function POST(request: Request) {
 
   try {
     const json = await request.json();
-    requestBody = postRequestBodySchema.parse(json);
     console.log("[POST] Raw request body:", JSON.stringify(json, null, 2));
+    requestBody = postRequestBodySchema.parse(json);
+    console.log("[POST] Parsed request body:", JSON.stringify(requestBody, null, 2));
   } catch (error) {
+    console.error("[POST] Error parsing request body:", error);
     return new ChatSDKError('bad_request:api').toResponse();
   }
 
@@ -125,9 +127,26 @@ export async function POST(request: Request) {
       stop,
     } = requestBody;
 
+    console.log(`[POST] Requested model: ${requestedModel}`);
+    console.log(`[POST] Messages:`, JSON.stringify(messages, null, 2));
+    console.log(`[POST] Temperature: ${temperature}`);
+    console.log(`[POST] Max completion tokens: ${max_completion_tokens}`);
+    console.log(`[POST] Top P: ${top_p}`);
+    console.log(`[POST] Stream: ${stream}`);
+    console.log(`[POST] Stop: ${JSON.stringify(stop)}`);
+
+    // Check for Groq API key in environment, if relevant (example, adjust variable as needed)
+    const groqApiKey = process.env.GROQ_API_KEY;
+    if (!groqApiKey) {
+      console.warn("[POST] GROQ_API_KEY is missing from environment!");
+    } else {
+      console.log("[POST] GROQ_API_KEY is present.");
+    }
+
     const session = await auth();
 
     if (!session?.user) {
+      console.warn("[POST] No user session, unauthorized.");
       return new ChatSDKError('unauthorized:chat').toResponse();
     }
 
@@ -137,55 +156,66 @@ export async function POST(request: Request) {
     // Validate the requested model exists
     const validModel = chatModels.find(model => model.id === requestedModel);
     if (!validModel) {
+      console.warn(`[POST] Requested model ${requestedModel} not found in chatModels.`);
       return new ChatSDKError('bad_request:api').toResponse();
     }
 
     // Check if user can use the requested model
     if (!userEntitlements.availableChatModelIds.includes(requestedModel)) {
+      console.warn(`[POST] User not entitled to model ${requestedModel}.`);
       return new ChatSDKError('forbidden:chat').toResponse();
     }
 
     const selectedChatModel = requestedModel;
+    console.log(`[POST] Selected chat model: ${selectedChatModel}`);
 
     const messageCount = await getMessageCountByUserId({
       id: session.user.id,
       differenceInHours: 24,
     });
+    console.log(`[POST] Message count for user ${session.user.id}: ${messageCount}`);
 
     if (messageCount >= userEntitlements.maxMessagesPerDay) {
+      console.warn(`[POST] Message count exceeded for user.`);
       return new ChatSDKError('rate_limit:chat').toResponse();
     }
 
     // Extract or generate chat ID
     const chatId = extractOrGenerateChatId(messages);
-    
+    console.log(`[POST] Chat ID: ${chatId}`);
+
     // Convert schema messages to UI messages
     const uiMessages = convertSchemaMessagesToUIMessages(messages);
-    
+    console.log(`[POST] UI Messages:`, JSON.stringify(uiMessages, null, 2));
+
     // Get the last user message for title generation
     const lastUserMessage = uiMessages.filter(msg => msg.role === 'user').pop() as ChatMessage | undefined;
+    console.log(`[POST] Last user message:`, JSON.stringify(lastUserMessage, null, 2));
 
     const chat = await getChatById({ id: chatId });
 
     if (!chat) {
+        console.log(`[POST] No chat found, creating new chat with ID: ${chatId}`);
         await saveChat({
             id: chatId,
             userId: session.user.id,
-            title: 'New Chat', // Or generate a simple title like 'Chat ' + new Date().toISOString()
+            title: 'New Chat',
             visibility: 'private' as VisibilityType,
         });
     } else if (chat) {
         if (chat.userId !== session.user.id) {
+            console.warn(`[POST] Chat userId does not match session userId.`);
             return new ChatSDKError('forbidden:chat').toResponse();
         }
     }
 
     const messagesFromDb = await getMessagesByChatId({ id: chatId });
     const existingUIMessages = convertToUIMessages(messagesFromDb);
-    
+    console.log(`[POST] Existing UI Messages from DB:`, JSON.stringify(existingUIMessages, null, 2));
+
     // Merge existing messages with new messages, avoiding duplicates
     const allUIMessages = [...existingUIMessages];
-    
+
     // Only add new user messages that aren't already in the database
     const newUserMessages = uiMessages.filter(msg => 
       msg.role === 'user' && !existingUIMessages.some(existing => 
@@ -197,6 +227,7 @@ export async function POST(request: Request) {
     allUIMessages.push(...newUserMessages);
 
     const { longitude, latitude, city, country } = geolocation(request);
+    console.log(`[POST] Geolocation:`, { longitude, latitude, city, country });
 
     const requestHints: RequestHints = {
       longitude,
@@ -207,6 +238,7 @@ export async function POST(request: Request) {
 
     // Save new user messages to database
     if (newUserMessages.length > 0) {
+      console.log(`[POST] Saving new user messages to DB:`, JSON.stringify(newUserMessages, null, 2));
       await saveMessages({
         messages: newUserMessages.map((message) => ({
           chatId,
@@ -221,6 +253,7 @@ export async function POST(request: Request) {
 
     const streamId = generateUUID();
     await createStreamId({ streamId, chatId });
+    console.log(`[POST] Created stream ID: ${streamId}`);
 
     const streamResponse = createUIMessageStream({
       execute: ({ writer: dataStream }) => {
@@ -247,6 +280,12 @@ export async function POST(request: Request) {
           },
         };
 
+        // LOGGING PROVIDER/MODEL CALL
+        console.log(`[POST] About to call streamText with model: ${selectedChatModel}`);
+        console.log(`[POST] Model instance:`, myProvider.languageModel(selectedChatModel));
+        console.log(`[POST] Messages sent to model:`, JSON.stringify(convertToModelMessages(allUIMessages), null, 2));
+        console.log(`[POST] System prompt:`, systemPrompt({ selectedChatModel, requestHints }));
+
         const result = streamText({
           model: myProvider.languageModel(selectedChatModel),
           system: systemPrompt({ selectedChatModel, requestHints }),
@@ -269,6 +308,7 @@ export async function POST(request: Request) {
       },
       generateId: generateUUID,
       onFinish: async ({ messages }) => {
+        console.log(`[POST] Stream finished. Saving messages:`, JSON.stringify(messages, null, 2));
         await saveMessages({
           messages: messages.map((message) => ({
             id: message.id,
@@ -280,37 +320,42 @@ export async function POST(request: Request) {
           })),
         });
       },
-      onError: () => {
+      onError: (err) => {
+        console.error('[POST] Error during stream:', err);
         return 'Oops, an error occurred!';
       },
     });
 
     const streamContext = getStreamContext();
+    console.log(`[POST] Stream context:`, !!streamContext);
 
     if (stream) {
       if (streamContext) {
+        console.log(`[POST] Returning resumable stream response.`);
         return new Response(
           await streamContext.resumableStream(streamId, () =>
             streamResponse.pipeThrough(new JsonToSseTransformStream()),
           ),
         );
       } else {
+        console.log(`[POST] Returning basic stream response.`);
         return new Response(streamResponse.pipeThrough(new JsonToSseTransformStream()));
       }
     } else {
       // Handle non-streaming response
       const chunks: any[] = [];
       const reader = streamResponse.getReader();
-      
+
       try {
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
           chunks.push(value);
         }
-        
+
         // Return the final response as JSON
         const finalMessage = chunks[chunks.length - 1];
+        console.log(`[POST] Final response chunk:`, JSON.stringify(finalMessage, null, 2));
         return Response.json(finalMessage);
       } finally {
         reader.releaseLock();
@@ -318,10 +363,11 @@ export async function POST(request: Request) {
     }
   } catch (error) {
     if (error instanceof ChatSDKError) {
+      console.error('[POST] ChatSDKError:', error);
       return error.toResponse();
     }
-    
-    console.error('Unexpected error:', error);
+
+    console.error('[POST] Unexpected error:', error);
     return new ChatSDKError('bad_request:api').toResponse();
   }
 }
@@ -330,27 +376,34 @@ export async function DELETE(request: Request) {
   const { searchParams } = new URL(request.url);
   const id = searchParams.get('id');
 
+  console.log(`[DELETE] Chat ID to delete: ${id}`);
+
   if (!id) {
+    console.warn(`[DELETE] No chat ID provided.`);
     return new ChatSDKError('bad_request:api').toResponse();
   }
 
   const session = await auth();
 
   if (!session?.user) {
+    console.warn(`[DELETE] No user session, unauthorized.`);
     return new ChatSDKError('unauthorized:chat').toResponse();
   }
 
   const chat = await getChatById({ id });
 
   if (!chat) {
+    console.warn(`[DELETE] Chat not found.`);
     return new ChatSDKError('bad_request:api').toResponse();
   }
 
   if (chat.userId !== session.user.id) {
+    console.warn(`[DELETE] Chat userId does not match session userId.`);
     return new ChatSDKError('forbidden:chat').toResponse();
   }
 
   const deletedChat = await deleteChatById({ id });
 
+  console.log(`[DELETE] Deleted chat:`, JSON.stringify(deletedChat, null, 2));
   return Response.json(deletedChat, { status: 200 });
 }
