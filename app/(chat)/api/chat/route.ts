@@ -71,24 +71,20 @@ function convertSchemaMessagesToUIMessages(messages: PostRequestBody['messages']
     role: msg.role,
     content: Array.isArray(msg.content)
       ? msg.content.map((part) => {
-          if (part.type === 'text') {
-            return {
-              type: 'text' as const,
-              text: part.text,
-            };
-          } else {
-            // For file parts, map to image format
-            return {
-              type: 'image' as const,
-              image: part.url,
-            };
+          if (part.type === "text") {
+            return { type: "text" as const, text: part.text };
+          } else if (part.type === "file") {
+            return { type: "image" as const, image: part.url };
           }
+          return { type: "text" as const, text: JSON.stringify(part) };
         })
-      : // Fallback: treat as single text part if content is string or non-array
-        [
+      : [
           {
-            type: 'text' as const,
-            text: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content),
+            type: "text" as const,
+            text:
+              typeof msg.content === "string"
+                ? msg.content
+                : JSON.stringify(msg.content),
           },
         ],
     createdAt: new Date().toISOString(),
@@ -110,6 +106,21 @@ export async function POST(request: Request) {
     const json = await request.json();
     console.log("[POST] Raw request body:", JSON.stringify(json, null, 2));
     requestBody = postRequestBodySchema.parse(json);
+    // Normalize messages: ensure content is always an array of parts
+    requestBody.messages = requestBody.messages.map((msg) => {
+      if (!Array.isArray(msg.content)) {
+        return {
+          ...msg,
+          content: [
+            {
+              type: "text",
+              text: typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content),
+            },
+          ],
+        };
+      }
+      return msg;
+    });
     console.log("[POST] Parsed request body:", JSON.stringify(requestBody, null, 2));
   } catch (error) {
     console.error("[POST] Error parsing request body:", error);
