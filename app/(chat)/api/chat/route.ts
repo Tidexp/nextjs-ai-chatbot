@@ -69,7 +69,7 @@ function convertSchemaMessagesToUIMessages(messages: PostRequestBody['messages']
   return messages.map((msg) => ({
     id: generateUUID(),
     role: msg.role,
-    content: Array.isArray(msg.content)
+    parts: Array.isArray(msg.content)
       ? msg.content.map((part) => {
           if (part.type === "text") {
             return { type: "text" as const, text: part.text };
