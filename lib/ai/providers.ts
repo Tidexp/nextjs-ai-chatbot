@@ -35,10 +35,11 @@ async function callGemini(model: string, options: any) {
   } as any;
 }
 
-async function* streamGemini(model: string, options: any) {
+async function streamGemini(model: string, options: any) {
   const messages = convertToModelMessages(options.messages);
   const lastMessage = messages[messages.length - 1];
 
+  // Chuyển message thành string
   let content = '';
   if (typeof lastMessage.content === 'string') {
     content = lastMessage.content;
@@ -49,26 +50,30 @@ async function* streamGemini(model: string, options: any) {
       .join('');
   }
 
+  // Lấy async iterator từ Gemini
   const responseIterator = await ai.models.generateContentStream({
     model,
     contents: content,
   });
 
-  for await (const chunk of responseIterator) {
-    const text = chunk.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (text) {
-      yield {
-        type: "content-delta" as const,
-        textDelta: text,
-      };
+  // Wrap thành ReadableStream cho Next.js xài trực tiếp
+  const stream = new ReadableStream({
+    async start(controller) {
+      try {
+        for await (const chunk of responseIterator) {
+          const text = chunk.candidates?.[0]?.content?.parts?.[0]?.text;
+          if (text) {
+            controller.enqueue(new TextEncoder().encode(text));
+          }
+        }
+        controller.close();
+      } catch (err) {
+        controller.error(err);
+      }
     }
-  }
+  });
 
-  yield {
-    type: "finish" as const,
-    finishReason: "stop" as const,
-    usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
-  };
+  return stream;
 }
 
 export const myProvider = customProvider({
