@@ -37,19 +37,27 @@ async function callGemini(model: string, options: any) {
 
 export const myProvider = customProvider({
   languageModels: {
-    "gemini-2.5-pro": { 
+    "gemini-2.5-pro": {
+      specificationVersion: "v2",
+      modelId: "gemini-2.5-pro",
       doGenerate: (options: any) => callGemini("gemini-2.5-pro", options),
       doStream: (options: any) => callGemini("gemini-2.5-pro", options),
     } as any,
-    "gemini-2.5-flash": { 
+    "gemini-2.5-flash": {
+      specificationVersion: "v2", 
+      modelId: "gemini-2.5-flash",
       doGenerate: (options: any) => callGemini("gemini-2.5-flash", options),
       doStream: (options: any) => callGemini("gemini-2.5-flash", options),
     } as any,
-    "gemini-2.5-flash-lite": { 
+    "gemini-2.5-flash-lite": {
+      specificationVersion: "v2",
+      modelId: "gemini-2.5-flash-lite", 
       doGenerate: (options: any) => callGemini("gemini-2.5-flash-lite", options),
       doStream: (options: any) => callGemini("gemini-2.5-flash-lite", options),
     } as any,
-    "gemma-3": { 
+    "gemma-3": {
+      specificationVersion: "v2",
+      modelId: "models/gemma-3-12b-it",
       doGenerate: (options: any) => callGemini("models/gemma-3-12b-it", options),
       doStream: (options: any) => callGemini("models/gemma-3-12b-it", options),
     } as any,
