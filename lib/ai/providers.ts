@@ -35,8 +35,7 @@ async function callGemini(model: string, options: any) {
   } as any;
 }
 
-async function streamGemini(model: string, options: any) {
-  // Convert messages to simple string
+async function* streamGemini(model: string, options: any) {
   const messages = convertToModelMessages(options.messages);
   const lastMessage = messages[messages.length - 1];
 
@@ -50,30 +49,26 @@ async function streamGemini(model: string, options: any) {
       .join('');
   }
 
-  // Lấy async iterator từ Gemini
   const responseIterator = await ai.models.generateContentStream({
     model,
     contents: content,
   });
 
-  // Wrap async iterator thành ReadableStream
-  const stream = new ReadableStream({
-    async start(controller) {
-      try {
-        for await (const chunk of responseIterator) {
-          const text = chunk.candidates?.[0]?.content?.parts?.[0]?.text;
-          if (text) {
-            controller.enqueue(new TextEncoder().encode(text));
-          }
-        }
-        controller.close();
-      } catch (err) {
-        controller.error(err);
-      }
+  for await (const chunk of responseIterator) {
+    const text = chunk.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (text) {
+      yield {
+        type: "content-delta" as const,
+        textDelta: text,
+      };
     }
-  });
+  }
 
-  return stream;
+  yield {
+    type: "finish" as const,
+    finishReason: "stop" as const,
+    usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+  };
 }
 
 export const myProvider = customProvider({
