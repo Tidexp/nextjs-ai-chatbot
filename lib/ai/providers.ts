@@ -3,7 +3,6 @@ import {
   customProvider, 
   convertToModelMessages 
 } from "ai";
-import { groq } from "@ai-sdk/groq";
 
 // The client gets the API key from the environment variable `GEMINI_API_KEY`.
 const ai = new GoogleGenAI({});
