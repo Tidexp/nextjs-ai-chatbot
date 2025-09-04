@@ -147,11 +147,11 @@ export async function POST(request: Request) {
     console.log(`[POST] Stop: ${JSON.stringify(stop)}`);
 
     // Check for Groq API key in environment, if relevant (example, adjust variable as needed)
-    const groqApiKey = process.env.GROQ_API_KEY;
-    if (!groqApiKey) {
-      console.warn("[POST] GROQ_API_KEY is missing from environment!");
+    const geminiApiKey = process.env.GEMINI_API_KEY;
+    if (!geminiApiKey) {
+      console.warn("[POST] GEMINI_API_KEY is missing from environment!");
     } else {
-      console.log("[POST] GROQ_API_KEY is present.");
+      console.log("[POST] GEMINI_API_KEY is present.");
     }
 
     const session = await auth();
@@ -270,7 +270,7 @@ export async function POST(request: Request) {
       execute: ({ writer: dataStream }) => {
         const toolsConfig = {
           experimental_activeTools:
-            selectedChatModel === "meta-llama/llama-guard-4-12b"
+            selectedChatModel === "gemini-2.5-pro" || selectedChatModel === "gemini-2.5-flash"
               ? ([
                   "getWeather",
                   "createDocument",

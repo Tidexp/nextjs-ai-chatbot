@@ -13,8 +13,8 @@ export const entitlementsByUserType: Record<UserType, Entitlements> = {
   guest: {
     maxMessagesPerDay: 20,
     availableChatModelIds: [
-      'meta-llama/llama-guard-4-12b',
-      'gemma2-9b-it',
+      'gemini-2.5-flash-lite',
+      'gemma-3',
     ],
   },
 
@@ -24,8 +24,9 @@ export const entitlementsByUserType: Record<UserType, Entitlements> = {
   regular: {
     maxMessagesPerDay: 100,
     availableChatModelIds: [
-      'meta-llama/llama-guard-4-12b',
-      'gemma2-9b-it',
+      'gemini-2.5-flash',
+      'gemini-2.5-flash-lite',
+      'gemma-3',
     ],
   },
 
@@ -35,8 +36,10 @@ export const entitlementsByUserType: Record<UserType, Entitlements> = {
   // pro: {
   //   maxMessagesPerDay: 1000,
   //   availableChatModelIds: [
-  //     'meta-llama/llama-guard-4-12b',
-  //     'gemma2-9b-it',
+  //     'gemini-2.5-pro',
+  //     'gemini-2.5-flash',
+  //     'gemini-2.5-flash-lite',
+  //     'gemma-3',
   //   ],
   // },
 };

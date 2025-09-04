@@ -1,4 +1,4 @@
-export const DEFAULT_CHAT_MODEL: string = 'meta-llama/llama-guard-4-12b';
+export const DEFAULT_CHAT_MODEL: string = 'gemini-2.5-flash';
 
 export interface ChatModel {
   id: string;
@@ -8,13 +8,23 @@ export interface ChatModel {
 
 export const chatModels: Array<ChatModel> = [
   {
-    id: 'meta-llama/llama-guard-4-12b',
-    name: 'LLaMA Guard 12B',
-    description: 'Safe + advanced code',
+    id: 'gemini-2.5-pro',
+    name: 'Gemini 2.5 Pro',
+    description: 'Most capable model for complex tasks',
   },
   {
-    id: 'gemma2-9b-it',
-    name: 'Gemma 2 9B',
-    description: 'Fast, lightweight code',
+    id: 'gemini-2.5-flash',
+    name: 'Gemini 2.5 Flash',
+    description: 'Fast and efficient for most tasks',
+  },
+  {
+    id: 'gemini-2.5-flash-lite',
+    name: 'Gemini 2.5 Flash Lite',
+    description: 'Lightweight and quick responses',
+  },
+  {
+    id: 'gemma-3',
+    name: 'Gemma 3 12B',
+    description: 'Open source model for general use',
   },
 ];
