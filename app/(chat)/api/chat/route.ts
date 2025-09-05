@@ -302,11 +302,6 @@ export async function POST(request: Request) {
           system: systemPrompt({ selectedChatModel, requestHints }),
           messages: convertToModelMessages(allUIMessages),
           ...toolsConfig,
-          experimental_transform: smoothStream({ chunking: "word" }) as any,
-          experimental_telemetry: {
-            isEnabled: isProductionEnvironment,
-            functionId: "stream-text",
-          },
         });
 
         result.consumeStream();
