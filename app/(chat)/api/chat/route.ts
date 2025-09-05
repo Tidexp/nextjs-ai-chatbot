@@ -2,10 +2,7 @@ import {
   convertToModelMessages,
   createUIMessageStream,
   JsonToSseTransformStream,
-  smoothStream,
-  stepCountIs,
   streamText,
-  UIMessage,
 } from 'ai';
 import { auth, type UserType } from '@/app/(auth)/auth';
 import { type RequestHints, systemPrompt } from '@/lib/ai/prompts';
@@ -19,12 +16,10 @@ import {
   saveMessages,
 } from '@/lib/db/queries';
 import { convertToUIMessages, generateUUID } from '@/lib/utils';
-import { generateTitleFromUserMessage } from '../../actions';
 import { getWeather } from '@/lib/ai/tools/get-weather';
 import { createDocument } from '@/lib/ai/tools/create-document';
 import { updateDocument } from '@/lib/ai/tools/update-document';
 import { requestSuggestions } from '@/lib/ai/tools/request-suggestions';
-import { isProductionEnvironment } from '@/lib/constants';
 import { myProvider } from '@/lib/ai/providers';
 import { entitlementsByUserType } from '@/lib/ai/entitlements';
 import { postRequestBodySchema, type PostRequestBody } from './schema';
@@ -36,8 +31,7 @@ import {
 import { after } from 'next/server';
 import { ChatSDKError } from '@/lib/errors';
 import type { ChatMessage } from '@/lib/types';
-import type { ChatModel } from '@/lib/ai/models';
-import { chatModels, DEFAULT_CHAT_MODEL } from '@/lib/ai/models';
+import { chatModels } from '@/lib/ai/models';
 import type { VisibilityType } from '@/components/visibility-selector';
 
 export const maxDuration = 60;
@@ -267,50 +261,51 @@ export async function POST(request: Request) {
     console.log(`[POST] Created stream ID: ${streamId}`);
 
     const streamResponse = createUIMessageStream({
-      execute: ({ writer: dataStream }) => {
-        const toolsConfig = {
-          experimental_activeTools:
-            selectedChatModel === "gemini-2.5-pro" || selectedChatModel === "gemini-2.5-flash"
-              ? ([
-                  "getWeather",
-                  "createDocument",
-                  "updateDocument",
-                  "requestSuggestions",
-                ] as (
-                  | "getWeather"
-                  | "createDocument"
-                  | "updateDocument"
-                  | "requestSuggestions"
-                )[])
-              : [],
-          tools: {
-            getWeather,
-            createDocument: createDocument({ session, dataStream }),
-            updateDocument: updateDocument({ session, dataStream }),
-            requestSuggestions: requestSuggestions({ session, dataStream }),
-          },
-        };
+      execute: async ({ writer: dataStream }) => {
+        const experimentalTools = 
+        selectedChatModel === "gemini-2.5-pro" || selectedChatModel === "gemini-2.5-flash"
+          ? ["getWeather", "createDocument", "updateDocument", "requestSuggestions"] as const
+          : [];
 
-        // LOGGING PROVIDER/MODEL CALL
-        console.log(`[POST] About to call streamText with model: ${selectedChatModel}`);
-        console.log(`[POST] Model instance:`, myProvider.languageModel(selectedChatModel));
-        console.log(`[POST] Messages sent to model:`, JSON.stringify(convertToModelMessages(allUIMessages), null, 2));
-        console.log(`[POST] System prompt:`, systemPrompt({ selectedChatModel, requestHints }));
-
-        const result = streamText({
+      const toolsConfig = {
+        experimental_activeTools: [...experimentalTools], // bây giờ là đúng type
+        tools: {
+          getWeather,
+          createDocument: createDocument({ session, dataStream }),
+          updateDocument: updateDocument({ session, dataStream }),
+          requestSuggestions: requestSuggestions({ session, dataStream }),
+        },
+      };
+    
+        // clone mutable array để TypeScript không kêu
+        const callSettings = { ...toolsConfig, experimental_activeTools: [...toolsConfig.experimental_activeTools] };
+    
+        const rawResult = streamText({
           model: myProvider.languageModel(selectedChatModel),
           system: systemPrompt({ selectedChatModel, requestHints }),
           messages: convertToModelMessages(allUIMessages),
-          ...toolsConfig,
+          ...callSettings,
         });
+    
+        async function* normalizeGemini(result: any) {
+          for await (const chunk of result) {
+            const textPart = chunk?.candidates?.[0]?.content?.parts?.[0]?.text;
+            if (textPart) yield { type: "text-delta", text: textPart };
+          }
+        }
 
-        result.consumeStream();
-
-        dataStream.merge(
-          result.toUIMessageStream({
-            sendReasoning: true,
-          }),
-        );
+        const normalizedResult = normalizeGemini(rawResult);
+    
+        for await (const chunk of normalizedResult) {
+          dataStream.merge(
+            createUIMessageStream({
+              execute: async ({ writer }) => {
+                writer.merge({ type: "text", text: chunk.text } as any);
+              },
+              generateId: generateUUID,
+            })
+          );
+        }        
       },
       generateId: generateUUID,
       onFinish: async ({ messages }) => {
@@ -330,7 +325,7 @@ export async function POST(request: Request) {
         console.error('[POST] Error during stream:', err);
         return 'Oops, an error occurred!';
       },
-    });
+    });    
 
     const streamContext = getStreamContext();
     console.log(`[POST] Stream context:`, !!streamContext);
