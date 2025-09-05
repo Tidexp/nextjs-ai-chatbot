@@ -35,11 +35,10 @@ async function callGemini(model: string, options: any) {
   } as any;
 }
 
-async function streamGemini(model: string, options: any) {
+async function streamGemini(model: string, options: any): Promise<AsyncIterable<{ text?: string }>> {
   const messages = convertToModelMessages(options.messages);
   const lastMessage = messages[messages.length - 1];
 
-  // Chuyển message thành string
   let content = '';
   if (typeof lastMessage.content === 'string') {
     content = lastMessage.content;
@@ -50,30 +49,22 @@ async function streamGemini(model: string, options: any) {
       .join('');
   }
 
-  // Lấy async iterator từ Gemini
   const responseIterator = await ai.models.generateContentStream({
     model,
     contents: content,
   });
 
-  // Wrap thành ReadableStream cho Next.js xài trực tiếp
-  const stream = new ReadableStream({
-    async start(controller) {
-      try {
-        for await (const chunk of responseIterator) {
-          const text = chunk.candidates?.[0]?.content?.parts?.[0]?.text;
-          if (text) {
-            controller.enqueue(new TextEncoder().encode(text));
-          }
-        }
-        controller.close();
-      } catch (err) {
-        controller.error(err);
+  // Trả về async iterable đúng chuẩn SDK
+  async function* generator() {
+    for await (const chunk of responseIterator) {
+      const text = chunk.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (text) {
+        yield { text };
       }
     }
-  });
+  }
 
-  return stream;
+  return generator();
 }
 
 export const myProvider = customProvider({
