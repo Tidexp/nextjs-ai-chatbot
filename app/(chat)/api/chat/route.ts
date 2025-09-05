@@ -262,50 +262,56 @@ export async function POST(request: Request) {
 
     const streamResponse = createUIMessageStream({
       execute: async ({ writer: dataStream }) => {
-        const experimentalTools = 
-        selectedChatModel === "gemini-2.5-pro" || selectedChatModel === "gemini-2.5-flash"
-          ? ["getWeather", "createDocument", "updateDocument", "requestSuggestions"] as const
-          : [];
-
-      const toolsConfig = {
-        experimental_activeTools: [...experimentalTools], // bây giờ là đúng type
-        tools: {
-          getWeather,
-          createDocument: createDocument({ session, dataStream }),
-          updateDocument: updateDocument({ session, dataStream }),
-          requestSuggestions: requestSuggestions({ session, dataStream }),
-        },
-      };
-    
-        // clone mutable array để TypeScript không kêu
+        const experimentalTools =
+          selectedChatModel === "gemini-2.5-pro" || selectedChatModel === "gemini-2.5-flash"
+            ? ["getWeather", "createDocument", "updateDocument", "requestSuggestions"] as const
+            : [];
+      
+        const toolsConfig = {
+          experimental_activeTools: [...experimentalTools],
+          tools: {
+            getWeather,
+            createDocument: createDocument({ session, dataStream }),
+            updateDocument: updateDocument({ session, dataStream }),
+            requestSuggestions: requestSuggestions({ session, dataStream }),
+          },
+        };
+      
         const callSettings = { ...toolsConfig, experimental_activeTools: [...toolsConfig.experimental_activeTools] };
-    
+      
+        // streamText trả về StreamTextResult<Tools> (async iterable)
         const rawResult = streamText({
           model: myProvider.languageModel(selectedChatModel),
           system: systemPrompt({ selectedChatModel, requestHints }),
           messages: convertToModelMessages(allUIMessages),
           ...callSettings,
-        });
-    
-        async function* normalizeGemini(result: any) {
-          for await (const chunk of result) {
-            const textPart = chunk?.candidates?.[0]?.content?.parts?.[0]?.text;
-            if (textPart) yield { type: "text-delta", text: textPart };
-          }
-        }
-
-        const normalizedResult = normalizeGemini(rawResult);
-    
-        for await (const chunk of normalizedResult) {
-          dataStream.merge(
-            createUIMessageStream({
+        }) as unknown as AsyncIterable<{ text?: string; tool?: any; value?: any }>;
+      
+        // Lặp async trên chunks trả về
+        for await (const chunk of rawResult) {
+          if (chunk.text) {
+            // Tạo UIMessageStream cho chunk text
+            const messageStream = createUIMessageStream({
               execute: async ({ writer }) => {
-                writer.merge({ type: "text", text: chunk.text } as any);
+                // writer.merge chỉ nhận stream khác, hoặc chunk chuẩn internal
+                await writer.merge(
+                  createUIMessageStream({
+                    execute: async ({ writer: innerWriter }) => {
+                      // ép type tạm thời cho enqueue
+                      (innerWriter as any).enqueue(chunk.text || "");
+                    },
+                    generateId: generateUUID,
+                  })
+                );                
               },
               generateId: generateUUID,
-            })
-          );
-        }        
+            });
+        
+            dataStream.merge(messageStream);
+          } else if (chunk.tool) {
+            console.log("Tool triggered:", chunk.tool, chunk.value);
+          }
+        }   
       },
       generateId: generateUUID,
       onFinish: async ({ messages }) => {
