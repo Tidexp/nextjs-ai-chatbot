@@ -288,6 +288,7 @@ export async function POST(request: Request) {
     
             switch (chunk.type) {
               case "text-delta":
+                console.log("[POST] Text delta chunk:", chunk.text);
                 await dataStream.write({
                   type: "text-delta",
                   delta: chunk.text || "",
