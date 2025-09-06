@@ -3,6 +3,7 @@ import {
   createUIMessageStream,
   JsonToSseTransformStream,
   streamText,
+  StreamTextResult,
 } from 'ai';
 import { auth, type UserType } from '@/app/(auth)/auth';
 import { type RequestHints, systemPrompt } from '@/lib/ai/prompts';
@@ -266,7 +267,7 @@ export async function POST(request: Request) {
           selectedChatModel === "gemini-2.5-pro" || selectedChatModel === "gemini-2.5-flash"
             ? ["getWeather", "createDocument", "updateDocument", "requestSuggestions"] as const
             : [];
-      
+    
         const toolsConfig = {
           experimental_activeTools: [...experimentalTools],
           tools: {
@@ -276,51 +277,55 @@ export async function POST(request: Request) {
             requestSuggestions: requestSuggestions({ session, dataStream }),
           },
         };
-      
-        const callSettings = { ...toolsConfig, experimental_activeTools: [...toolsConfig.experimental_activeTools] };
-      
-        // streamText trả về StreamTextResult<Tools> (async iterable)
-        const rawResult = streamText({
+    
+        await streamText({
           model: myProvider.languageModel(selectedChatModel),
           system: systemPrompt({ selectedChatModel, requestHints }),
           messages: convertToModelMessages(allUIMessages),
-          ...callSettings,
-        }) as unknown as AsyncIterable<{ text?: string; tool?: any; value?: any }>;
-      
-        // Lặp async trên chunks trả về
-        for await (const chunk of rawResult) {
-          if (chunk.text) {
-            // Tạo UIMessageStream cho chunk text
-            const messageStream = createUIMessageStream({
-              execute: async ({ writer }) => {
-                // writer.merge chỉ nhận stream khác, hoặc chunk chuẩn internal
-                await writer.merge(
-                  createUIMessageStream({
-                    execute: async ({ writer: innerWriter }) => {
-                      // ép type tạm thời cho enqueue
-                      (innerWriter as any).enqueue(chunk.text || "");
-                    },
-                    generateId: generateUUID,
-                  })
-                );                
-              },
-              generateId: generateUUID,
-            });
-        
-            dataStream.merge(messageStream);
-          } else if (chunk.tool) {
-            console.log("Tool triggered:", chunk.tool, chunk.value);
-          }
-        }   
+          ...toolsConfig,
+          onChunk: async (event) => {
+            const { chunk } = event;
+    
+            switch (chunk.type) {
+              case "text-delta":
+                await dataStream.write({
+                  type: "text-delta",
+                  delta: chunk.text || "",
+                  id: generateUUID(),
+                });
+                break;
+    
+              case "tool-call":
+                const toolCall = {
+                  tool: chunk.toolName,
+                  value: "input" in chunk ? chunk.input : undefined,
+                };
+                console.log("[POST] Tool triggered:", toolCall);
+    
+                await dataStream.write({
+                  type: "tool-result",
+                  id: generateUUID(),
+                  toolName: toolCall.tool,
+                  toolValue: toolCall.value,
+                } as any);
+                break;
+    
+              default:
+                console.log("[POST] Ignored chunk type:", chunk.type);
+                break;
+            }
+          },
+          onError: (err) => console.error("[POST] streamText error:", err),
+          onFinish: () => console.log("[POST] streamText finished"),
+        });
       },
       generateId: generateUUID,
       onFinish: async ({ messages }) => {
-        console.log(`[POST] Stream finished. Saving messages:`, JSON.stringify(messages, null, 2));
         await saveMessages({
-          messages: messages.map((message) => ({
-            id: message.id,
-            role: message.role,
-            parts: (message as any).content || (message as any).parts || [],
+          messages: messages.map((m) => ({
+            id: m.id,
+            role: m.role,
+            parts: (m as any).content || (m as any).parts || [{ type: "text", text: "" }],
             createdAt: new Date(),
             attachments: [],
             chatId,
@@ -328,10 +333,10 @@ export async function POST(request: Request) {
         });
       },
       onError: (err) => {
-        console.error('[POST] Error during stream:', err);
-        return 'Oops, an error occurred!';
-      },
-    });    
+        console.error("[POST] UIMessageStream error:", err);
+        return "Oops, an error occurred!";
+      }      
+    });        
 
     const streamContext = getStreamContext();
     console.log(`[POST] Stream context:`, !!streamContext);
