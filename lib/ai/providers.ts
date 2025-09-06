@@ -1,86 +1,67 @@
 import { GoogleGenAI } from "@google/genai";
-import {
-  customProvider,
-  convertToModelMessages
-} from "ai";
+import { customProvider, convertToModelMessages } from "ai";
 
-// The client gets the API key from the environment variable `GEMINI_API_KEY`.
 const ai = new GoogleGenAI({});
 
-// Define the tool types to match the StreamTextResult generic
-type ToolCall = {
-  tool: string;
-  value: any;
-};
-
-async function callGemini(model: string, options: any) {
-  // Convert AI SDK messages to simple string content
-  const messages = convertToModelMessages(options.messages);
+// ----- Helper: Lấy content string từ last message -----
+function getContentFromLastMessage(messages: any[]): string {
   const lastMessage = messages[messages.length - 1];
+  if (!lastMessage) return "";
   
-  let content = '';
-  if (typeof lastMessage.content === 'string') {
-    content = lastMessage.content;
-  } else if (Array.isArray(lastMessage.content)) {
-    content = lastMessage.content
-      .filter((part: any) => part.type === 'text')
-      .map((part: any) => part.text || '')
-      .join('');
+  if (typeof lastMessage.content === "string") return lastMessage.content;
+  if (Array.isArray(lastMessage.content)) {
+    return lastMessage.content
+      .filter((part: any) => part.type === "text")
+      .map((part: any) => part.text || "")
+      .join("");
   }
+  return "";
+}
 
-  const response = await ai.models.generateContent({
-    model,
-    contents: content,
-  });
+// ----- Helper: Extract text/tool call từ chunk -----
+type ToolCall = { tool: string; value: any };
+
+function extractTextAndTool(chunk: any): { text?: string; tool?: ToolCall } {
+  const contentPart = chunk?.candidates?.[0]?.content?.parts?.[0];
+  if (!contentPart) return {};
+
+  const text = contentPart.text;
+  const functionCall = contentPart.functionCall;
+  const tool = functionCall?.name ? { tool: functionCall.name, value: functionCall.args || {} } : undefined;
+
+  return { text, tool };
+}
+
+// ----- Non-stream generate -----
+async function callGemini(model: string, options: any) {
+  const messages = convertToModelMessages(options.messages);
+  const content = getContentFromLastMessage(messages);
+
+  const response = await ai.models.generateContent({ model, contents: content });
 
   return {
     content: [{ type: "text" as const, text: response.text || "" }],
     finishReason: "stop" as const,
     usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
     warnings: [],
-  } as any;
+  };
 }
 
+// ----- Stream generate -----
 async function streamGemini(model: string, options: any): Promise<AsyncIterable<{ text?: string; tool?: ToolCall }>> {
   const messages = convertToModelMessages(options.messages);
-  const lastMessage = messages[messages.length - 1];
+  const content = getContentFromLastMessage(messages);
 
-  let content = '';
-  if (typeof lastMessage.content === 'string') {
-    content = lastMessage.content;
-  } else if (Array.isArray(lastMessage.content)) {
-    content = lastMessage.content
-      .filter((part: any) => part.type === 'text')
-      .map((part: any) => part.text || '')
-      .join('');
-  }
-
-  console.log(`[streamGemini] Calling generateContentStream with model: ${model}, content: ${content}`);
-  const responseIterator = await ai.models.generateContentStream({
-    model,
-    contents: content,
-  });
+  console.log(`[streamGemini] Calling generateContentStream with model: ${model}`);
+  const responseIterator = await ai.models.generateContentStream({ model, contents: content });
 
   async function* generator() {
     try {
       for await (const chunk of responseIterator) {
-        console.log(`[streamGemini] Received chunk:`, JSON.stringify(chunk, null, 2));
-        const text = chunk.candidates?.[0]?.content?.parts?.[0]?.text;
-        const functionCall = chunk.candidates?.[0]?.content?.parts?.[0]?.functionCall;
-
-        let toolCall: ToolCall | undefined;
-        if (functionCall && functionCall.name && typeof functionCall.name === 'string') {
-          toolCall = {
-            tool: functionCall.name,
-            value: functionCall.args || {},
-          };
-        }
-
-        if (text || toolCall) {
-          yield { text, tool: toolCall };
-        } else {
-          console.warn(`[streamGemini] No valid text or tool call in chunk:`, JSON.stringify(chunk, null, 2));
-        }
+        console.log(`[streamGemini] Received raw chunk:`, JSON.stringify(chunk, null, 2));
+        const { text, tool } = extractTextAndTool(chunk);
+        if (text || tool) yield { text, tool };
+        else console.warn(`[streamGemini] Ignored chunk:`, JSON.stringify(chunk, null, 2));
       }
     } catch (error) {
       console.error(`[streamGemini] Error in generator:`, error);
@@ -91,31 +72,32 @@ async function streamGemini(model: string, options: any): Promise<AsyncIterable<
   return generator();
 }
 
+// ----- Custom provider -----
 export const myProvider = customProvider({
   languageModels: {
     "gemini-2.5-pro": {
       specificationVersion: "v2",
       modelId: "gemini-2.5-pro",
-      doGenerate: (options: any) => callGemini("gemini-2.5-pro", options),
-      doStream: (options: any) => streamGemini("gemini-2.5-pro", options),
+      doGenerate: (opts: any) => callGemini("gemini-2.5-pro", opts),
+      doStream: (opts: any) => streamGemini("gemini-2.5-pro", opts),
     } as any,
     "gemini-2.5-flash": {
       specificationVersion: "v2",
       modelId: "gemini-2.5-flash",
-      doGenerate: (options: any) => callGemini("gemini-2.5-flash", options),
-      doStream: (options: any) => streamGemini("gemini-2.5-flash", options),
+      doGenerate: (opts: any) => callGemini("gemini-2.5-flash", opts),
+      doStream: (opts: any) => streamGemini("gemini-2.5-flash", opts),
     } as any,
     "gemini-2.5-flash-lite": {
       specificationVersion: "v2",
       modelId: "gemini-2.5-flash-lite",
-      doGenerate: (options: any) => callGemini("gemini-2.5-flash-lite", options),
-      doStream: (options: any) => streamGemini("gemini-2.5-flash-lite", options),
+      doGenerate: (opts: any) => callGemini("gemini-2.5-flash-lite", opts),
+      doStream: (opts: any) => streamGemini("gemini-2.5-flash-lite", opts),
     } as any,
     "gemma-3": {
       specificationVersion: "v2",
       modelId: "models/gemma-3-12b-it",
-      doGenerate: (options: any) => callGemini("models/gemma-3-12b-it", options),
-      doStream: (options: any) => streamGemini("models/gemma-3-12b-it", options),
+      doGenerate: (opts: any) => callGemini("models/gemma-3-12b-it", opts),
+      doStream: (opts: any) => streamGemini("models/gemma-3-12b-it", opts),
     } as any,
   },
 });
