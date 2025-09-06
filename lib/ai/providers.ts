@@ -7,6 +7,12 @@ import {
 // The client gets the API key from the environment variable `GEMINI_API_KEY`.
 const ai = new GoogleGenAI({});
 
+// Define the tool types to match the StreamTextResult generic
+type ToolCall = {
+  tool: string;
+  value: any;
+};
+
 async function callGemini(model: string, options: any) {
   // Convert AI SDK messages to simple string content
   const messages = convertToModelMessages(options.messages);
@@ -35,7 +41,7 @@ async function callGemini(model: string, options: any) {
   } as any;
 }
 
-async function streamGemini(model: string, options: any): Promise<AsyncIterable<{ text?: string }>> {
+async function streamGemini(model: string, options: any): Promise<AsyncIterable<{ text?: string; tool?: ToolCall }>> {
   const messages = convertToModelMessages(options.messages);
   const lastMessage = messages[messages.length - 1];
 
@@ -49,18 +55,36 @@ async function streamGemini(model: string, options: any): Promise<AsyncIterable<
       .join('');
   }
 
+  console.log(`[streamGemini] Calling generateContentStream with model: ${model}, content: ${content}`);
   const responseIterator = await ai.models.generateContentStream({
     model,
     contents: content,
   });
 
-  // Trả về async iterable đúng chuẩn SDK
   async function* generator() {
-    for await (const chunk of responseIterator) {
-      const text = chunk.candidates?.[0]?.content?.parts?.[0]?.text;
-      if (text) {
-        yield { text };
+    try {
+      for await (const chunk of responseIterator) {
+        console.log(`[streamGemini] Received chunk:`, JSON.stringify(chunk, null, 2));
+        const text = chunk.candidates?.[0]?.content?.parts?.[0]?.text;
+        const functionCall = chunk.candidates?.[0]?.content?.parts?.[0]?.functionCall;
+
+        let toolCall: ToolCall | undefined;
+        if (functionCall && functionCall.name && typeof functionCall.name === 'string') {
+          toolCall = {
+            tool: functionCall.name,
+            value: functionCall.args || {},
+          };
+        }
+
+        if (text || toolCall) {
+          yield { text, tool: toolCall };
+        } else {
+          console.warn(`[streamGemini] No valid text or tool call in chunk:`, JSON.stringify(chunk, null, 2));
+        }
       }
+    } catch (error) {
+      console.error(`[streamGemini] Error in generator:`, error);
+      throw error;
     }
   }
 
