@@ -3,7 +3,7 @@
 import { DefaultChatTransport } from 'ai';
 import { useChat } from '@ai-sdk/react';
 import { useEffect, useState } from 'react';
-import useSWR, { useSWRConfig } from 'swr';
+import useSWR, { useSWRConfig, unstable_serialize } from 'swr';
 import { ChatHeader } from '@/components/chat-header';
 import type { Vote } from '@/lib/db/schema';
 import { fetcher, fetchWithErrorHandlers, generateUUID } from '@/lib/utils';
@@ -12,7 +12,6 @@ import { MultimodalInput } from './multimodal-input';
 import { Messages } from './messages';
 import type { VisibilityType } from './visibility-selector';
 import { useArtifactSelector } from '@/hooks/use-artifact';
-import { unstable_serialize } from 'swr/infinite';
 import { getChatHistoryPaginationKey } from './sidebar-history';
 import { toast } from './toast';
 import type { Session } from 'next-auth';
@@ -49,6 +48,13 @@ export function Chat({
   const { setDataStream } = useDataStream();
 
   const [input, setInput] = useState<string>('');
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const isArtifactVisible = useArtifactSelector((state) => state.isVisible);
+  const searchParams = useSearchParams();
+  const query = searchParams.get('query');
+  const [hasAppendedQuery, setHasAppendedQuery] = useState(false);
+
+  let streamStarted = false;
 
   const {
     messages,
@@ -65,71 +71,90 @@ export function Chat({
     generateId: generateUUID,
     transport: new DefaultChatTransport({
       api: '/api/chat',
-      fetch: fetchWithErrorHandlers,
+      fetch: async (input, init) => {
+        const res = await fetchWithErrorHandlers(input, init);
+
+        console.log('[Chat] Response received:', {
+          status: res.status,
+          headers: Object.fromEntries(res.headers.entries()),
+          ok: res.ok,
+        });
+
+        return res;
+      },
       prepareSendMessagesRequest({ messages, id, body }) {
+        console.log('[Chat] Stream about to start');
         const mappedMessages = messages.map((m) => ({
           role: m.role,
-          content: m.parts
-            ?.map((p) => (p.type === 'text' ? p.text : ''))
-            .join('\n') || '',
+          content: m.parts.length ? m.parts : [{ type: 'text', text: '' }],
         }));
+
+        console.log('[Chat] Sending messages:', JSON.stringify(mappedMessages, null, 2));
 
         return {
           body: {
             model: initialChatModel,
             messages: mappedMessages,
+            stream: true,
             ...body,
           },
         };
       },
     }),
     onData: (dataPart) => {
+      if (!streamStarted) {
+        console.log('[Chat] Stream started');
+        streamStarted = true;
+      }
+      console.log('[Chat] Received data part:', dataPart);
       setDataStream((ds) => (ds ? [...ds, dataPart] : []));
     },
-    onFinish: () => {
+    onFinish: (message) => {
+      console.log('[Chat] Stream finished:', message);
       mutate(unstable_serialize(getChatHistoryPaginationKey));
     },
     onError: (error) => {
+      console.error('[Chat] Error:', error);
       if (error instanceof ChatSDKError) {
-        toast({
-          type: 'error',
-          description: error.message,
-        });
+        toast({ type: 'error', description: error.message });
+      } else {
+        toast({ type: 'error', description: 'An unexpected error occurred' });
       }
     },
   });
 
-  const searchParams = useSearchParams();
-  const query = searchParams.get('query');
-
-  const [hasAppendedQuery, setHasAppendedQuery] = useState(false);
-
+  // Send query from URL once
   useEffect(() => {
     if (query && !hasAppendedQuery) {
+      console.log('[Chat] Sending query from URL:', query);
       sendMessage({
         role: 'user' as const,
         parts: [{ type: 'text', text: query }],
       });
-
       setHasAppendedQuery(true);
       window.history.replaceState({}, '', `/chat/${id}`);
     }
   }, [query, sendMessage, hasAppendedQuery, id]);
 
-  const { data: votes } = useSWR<Array<Vote>>(
+  // Debug status changes
+  useEffect(() => {
+    console.log('[Chat] Status changed:', status);
+  }, [status]);
+
+  // Debug messages changes
+  useEffect(() => {
+    console.log('[Chat] Messages updated:', {
+      count: messages.length,
+      lastMessage: messages[messages.length - 1],
+    });
+  }, [messages]);
+
+  const { data: votes } = useSWR<Vote[]>(
     messages.length >= 2 ? `/api/vote?chatId=${id}` : null,
     fetcher,
   );
 
-  const [attachments, setAttachments] = useState<Array<Attachment>>([]);
-  const isArtifactVisible = useArtifactSelector((state) => state.isVisible);
-
-  useAutoResume({
-    autoResume,
-    initialMessages,
-    resumeStream,
-    setMessages,
-  });
+  useAutoResume({ autoResume, initialMessages, resumeStream, setMessages });
 
   return (
     <>
@@ -170,6 +195,15 @@ export function Chat({
             />
           )}
         </div>
+
+        {process.env.NODE_ENV === 'development' && (
+          <div className="fixed bottom-4 right-4 p-4 bg-black/80 text-white text-xs rounded max-w-sm">
+            <div>Status: {status}</div>
+            <div>Messages: {messages.length}</div>
+            <div>Chat ID: {id}</div>
+            <div>Model: {initialChatModel}</div>
+          </div>
+        )}
       </div>
 
       <Artifact
