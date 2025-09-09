@@ -24,22 +24,10 @@ export const entitlementsByUserType: Record<UserType, Entitlements> = {
   regular: {
     maxMessagesPerDay: 100,
     availableChatModelIds: [
+      'gemini-2.5-pro',       // 👈 thêm Pro vô đây
       'gemini-2.5-flash',
       'gemini-2.5-flash-lite',
       'gemma-3',
     ],
   },
-
-  /*
-   * For users with a paid membership (TODO)
-   */
-  // pro: {
-  //   maxMessagesPerDay: 1000,
-  //   availableChatModelIds: [
-  //     'gemini-2.5-pro',
-  //     'gemini-2.5-flash',
-  //     'gemini-2.5-flash-lite',
-  //     'gemma-3',
-  //   ],
-  // },
 };

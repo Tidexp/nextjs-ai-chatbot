@@ -107,7 +107,27 @@ const PurePreviewMessage = ({
               </div>
             )}
 
-            {message.parts?.map((part, index) => {
+            {(() => {
+              const hasUsableParts = Array.isArray(message.parts) && message.parts.some((p: any) => p.type === 'text' && p.text && p.text.trim().length > 0);
+              if (!hasUsableParts && message.role === 'assistant') {
+                const fallbackText = (message as any).text || '';
+                if (fallbackText && fallbackText.trim().length > 0) {
+                  return (
+                    <div className="flex flex-row gap-2 items-start">
+                      <MessageContent
+                        data-testid="message-content"
+                        className={cn('justify-start items-start text-left', {
+                          'bg-transparent': true,
+                        })}
+                      >
+                        <Response>{sanitizeText(fallbackText)}</Response>
+                      </MessageContent>
+                    </div>
+                  );
+                }
+              }
+
+              return message.parts?.map((part, index) => {
               const { type } = part;
               const key = `message-${message.id}-part-${index}`;
 
@@ -292,7 +312,8 @@ const PurePreviewMessage = ({
                   </Tool>
                 );
               }
-            })}
+              });
+            })()}
 
             {!isReadonly && (
               <MessageActions

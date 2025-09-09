@@ -2,13 +2,12 @@ import {
   convertToModelMessages,
   createUIMessageStream,
   JsonToSseTransformStream,
-  smoothStream,
-  stepCountIs,
   streamText,
-  UIMessage,
+  StreamTextResult,
+  generateText,
 } from 'ai';
 import { auth, type UserType } from '@/app/(auth)/auth';
-import { type RequestHints, systemPrompt } from '@/lib/ai/prompts';
+import { systemPrompt } from '@/lib/ai/prompts';
 import {
   createStreamId,
   deleteChatById,
@@ -19,16 +18,9 @@ import {
   saveMessages,
 } from '@/lib/db/queries';
 import { convertToUIMessages, generateUUID } from '@/lib/utils';
-import { generateTitleFromUserMessage } from '../../actions';
-import { getWeather } from '@/lib/ai/tools/get-weather';
-import { createDocument } from '@/lib/ai/tools/create-document';
-import { updateDocument } from '@/lib/ai/tools/update-document';
-import { requestSuggestions } from '@/lib/ai/tools/request-suggestions';
-import { isProductionEnvironment } from '@/lib/constants';
-import { myProvider } from '@/lib/ai/providers';
+import { myProvider, type GeminiModelId } from '@/lib/ai/providers';
 import { entitlementsByUserType } from '@/lib/ai/entitlements';
 import { postRequestBodySchema, type PostRequestBody } from './schema';
-import { geolocation } from '@vercel/functions';
 import {
   createResumableStreamContext,
   type ResumableStreamContext,
@@ -36,8 +28,7 @@ import {
 import { after } from 'next/server';
 import { ChatSDKError } from '@/lib/errors';
 import type { ChatMessage } from '@/lib/types';
-import type { ChatModel } from '@/lib/ai/models';
-import { chatModels, DEFAULT_CHAT_MODEL } from '@/lib/ai/models';
+import { chatModels } from '@/lib/ai/models';
 import type { VisibilityType } from '@/components/visibility-selector';
 
 export const maxDuration = 60;
@@ -89,14 +80,6 @@ function convertSchemaMessagesToUIMessages(messages: PostRequestBody['messages']
         ],
     createdAt: new Date().toISOString(),
   }));
-}
-
-// Helper function to extract chat ID from messages or generate new one
-function extractOrGenerateChatId(messages: PostRequestBody['messages']): string {
-  // Try to find chat ID in system message or generate new one
-  const systemMessage = messages.find(msg => msg.role === 'system');
-  // You might want to encode chat ID in system message or use a different strategy
-  return generateUUID();
 }
 
 export async function POST(request: Request) {
@@ -192,7 +175,7 @@ export async function POST(request: Request) {
     }
 
     // Extract or generate chat ID
-    const chatId = extractOrGenerateChatId(messages);
+    let chatId = (requestBody as any).chatId || generateUUID();
     console.log(`[POST] Chat ID: ${chatId}`);
 
     // Convert schema messages to UI messages
@@ -237,16 +220,6 @@ export async function POST(request: Request) {
 
     allUIMessages.push(...newUserMessages);
 
-    const { longitude, latitude, city, country } = geolocation(request);
-    console.log(`[POST] Geolocation:`, { longitude, latitude, city, country });
-
-    const requestHints: RequestHints = {
-      longitude,
-      latitude,
-      city,
-      country,
-    };
-
     // Save new user messages to database
     if (newUserMessages.length > 0) {
       console.log(`[POST] Saving new user messages to DB:`, JSON.stringify(newUserMessages, null, 2));
@@ -267,64 +240,63 @@ export async function POST(request: Request) {
     console.log(`[POST] Created stream ID: ${streamId}`);
 
     const streamResponse = createUIMessageStream({
-      execute: ({ writer: dataStream }) => {
-        const toolsConfig = {
-          experimental_activeTools:
-            selectedChatModel === "gemini-2.5-pro" || selectedChatModel === "gemini-2.5-flash"
-              ? ([
-                  "getWeather",
-                  "createDocument",
-                  "updateDocument",
-                  "requestSuggestions",
-                ] as (
-                  | "getWeather"
-                  | "createDocument"
-                  | "updateDocument"
-                  | "requestSuggestions"
-                )[])
-              : [],
-          tools: {
-            getWeather,
-            createDocument: createDocument({ session, dataStream }),
-            updateDocument: updateDocument({ session, dataStream }),
-            requestSuggestions: requestSuggestions({ session, dataStream }),
-          },
-        };
+      execute: async ({ writer: dataStream }) => {
+        let started = false;
+        let currentId = generateUUID();
 
-        // LOGGING PROVIDER/MODEL CALL
-        console.log(`[POST] About to call streamText with model: ${selectedChatModel}`);
-        console.log(`[POST] Model instance:`, myProvider.languageModel(selectedChatModel));
-        console.log(`[POST] Messages sent to model:`, JSON.stringify(convertToModelMessages(allUIMessages), null, 2));
-        console.log(`[POST] System prompt:`, systemPrompt({ selectedChatModel, requestHints }));
-
-        const result = streamText({
-          model: myProvider.languageModel(selectedChatModel),
-          system: systemPrompt({ selectedChatModel, requestHints }),
+        const result = await streamText({
+          model: myProvider.languageModel(selectedChatModel as GeminiModelId),
+          system: systemPrompt({ selectedChatModel }),
           messages: convertToModelMessages(allUIMessages),
-          ...toolsConfig,
-          experimental_transform: smoothStream({ chunking: "word" }) as any,
-          experimental_telemetry: {
-            isEnabled: isProductionEnvironment,
-            functionId: "stream-text",
+
+          onChunk: async (event) => {
+            try {
+              const anyEvent = event as any;
+              const text =
+                anyEvent.textDelta ??
+                anyEvent.delta ??
+                anyEvent?.delta?.text ??
+                anyEvent?.chunk?.candidates?.[0]?.content?.parts?.[0]?.text;
+
+              if (!text) return;
+
+              if (!started) {
+                started = true;
+                await dataStream.write({ type: 'text-start', id: currentId });
+              }
+
+              await dataStream.write({
+                type: 'text-delta',
+                id: currentId,
+                delta: text,
+              });
+            } catch (err) {
+              console.error('[POST] onChunk error:', err);
+            }
+          },
+
+          onFinish: async () => {
+            if (started) {
+              await dataStream.write({ type: 'text-end', id: currentId });
+            }
           },
         });
 
-        result.consumeStream();
-
-        dataStream.merge(
-          result.toUIMessageStream({
-            sendReasoning: true,
-          }),
-        );
+        // IMPORTANT: Consume the stream to trigger the provider
+        console.log('[POST] Starting to consume stream...');
+        for await (const chunk of result.textStream) {
+          console.log('[POST] Consuming chunk:', chunk);
+          // The onChunk callback should handle this, but we need to consume the stream
+        }
+        console.log('[POST] Stream consumption completed');
       },
       generateId: generateUUID,
       onFinish: async ({ messages }) => {
-        console.log(`[POST] Stream finished. Saving messages:`, JSON.stringify(messages, null, 2));
         await saveMessages({
-          messages: messages.map((message) => ({
-            id: message.id,
-            role: message.role,
-            parts: (message as any).content || (message as any).parts || [],
+          messages: messages.map((m) => ({
+            id: m.id,
+            role: m.role,
+            parts: (m as any).content || (m as any).parts || [{ type: "text", text: "" }],
             createdAt: new Date(),
             attachments: [],
             chatId,
@@ -332,45 +304,81 @@ export async function POST(request: Request) {
         });
       },
       onError: (err) => {
-        console.error('[POST] Error during stream:', err);
-        return 'Oops, an error occurred!';
-      },
-    });
+        console.error("[POST] UIMessageStream error:", err);
+        return "Oops, an error occurred!";
+      }      
+    });        
 
     const streamContext = getStreamContext();
     console.log(`[POST] Stream context:`, !!streamContext);
 
     if (stream) {
-      if (streamContext) {
-        console.log(`[POST] Returning resumable stream response.`);
-        return new Response(
-          await streamContext.resumableStream(streamId, () =>
-            streamResponse.pipeThrough(new JsonToSseTransformStream()),
-          ),
-        );
-      } else {
-        console.log(`[POST] Returning basic stream response.`);
-        return new Response(streamResponse.pipeThrough(new JsonToSseTransformStream()));
-      }
+      // Always return basic SSE stream (disable resumable)
+      return new Response(streamResponse.pipeThrough(new JsonToSseTransformStream()), {
+        headers: {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache",
+          "Connection": "keep-alive",
+        },
+      });
     } else {
-      // Handle non-streaming response
-      const chunks: any[] = [];
-      const reader = streamResponse.getReader();
-
+      // Non-streaming: prefer generateText; fallback to streaming on provider 503
+      let fullText = '';
       try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          chunks.push(value);
+        const result = await generateText({
+          model: myProvider.languageModel(selectedChatModel as GeminiModelId),
+          system: systemPrompt({ selectedChatModel }),
+          messages: convertToModelMessages(allUIMessages),
+        });
+        fullText = result.text || '';
+      } catch (genErr: any) {
+        console.warn('[POST] generateText failed, falling back to streamText:', genErr?.message || genErr);
+        // Fallback: stream and assemble
+        const result = await streamText({
+          model: myProvider.languageModel(selectedChatModel as GeminiModelId),
+          system: systemPrompt({ selectedChatModel }),
+          messages: convertToModelMessages(allUIMessages),
+        });
+        for await (const chunk of result.textStream) {
+          const anyChunk: any = chunk as any;
+          const t = anyChunk.textDelta || anyChunk.delta || anyChunk.text || '';
+          if (t) fullText += t;
         }
-
-        // Return the final response as JSON
-        const finalMessage = chunks[chunks.length - 1];
-        console.log(`[POST] Final response chunk:`, JSON.stringify(finalMessage, null, 2));
-        return Response.json(finalMessage);
-      } finally {
-        reader.releaseLock();
       }
+
+      if (!fullText || !fullText.trim()) {
+        fullText = 'Sorry, I could not generate a response. Please try again.';
+      }
+
+      // Save assistant message
+      const assistantId = generateUUID();
+      const assistantMessage: ChatMessage = {
+        id: assistantId,
+        role: 'assistant',
+        parts: [{ type: 'text', text: fullText }] as any,
+        createdAt: new Date().toISOString(),
+        attachments: [],
+      } as any;
+
+      await saveMessages({
+        messages: [
+          {
+            id: assistantId,
+            role: 'assistant',
+            parts: assistantMessage.parts as any,
+            createdAt: new Date(),
+            attachments: [],
+            chatId,
+          },
+        ],
+      });
+
+      return Response.json({
+        type: 'message',
+        message: assistantMessage,
+        parts: assistantMessage.parts,
+        text: fullText,
+      });
     }
   } catch (error) {
     if (error instanceof ChatSDKError) {
