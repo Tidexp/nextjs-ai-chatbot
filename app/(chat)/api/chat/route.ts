@@ -137,6 +137,8 @@ export async function POST(request: Request) {
     console.log(`[POST] Max completion tokens: ${max_completion_tokens}`);
     console.log(`[POST] Top P: ${top_p}`);
     console.log(`[POST] Stream: ${stream}`);
+    console.log(`[POST] Stream type: ${typeof stream}`);
+    console.log(`[POST] Stream value: ${JSON.stringify(stream)}`);
     console.log(`[POST] Stop: ${JSON.stringify(stop)}`);
 
     // Check for Groq API key in environment, if relevant (example, adjust variable as needed)

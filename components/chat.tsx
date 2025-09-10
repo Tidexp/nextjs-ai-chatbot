@@ -74,45 +74,6 @@ export function Chat({
       fetch: async (input, init) => {
         const res = await fetchWithErrorHandlers(input, init);
         console.log('[Chat] Response status:', res.status);
-    
-        // Nếu server trả JSON thay vì stream, fake stream
-        const contentType = res.headers.get('content-type') || '';
-        if (contentType.includes('application/json')) {
-          const json = await res.json();
-          console.log('[Chat] Non-stream JSON:', json);
-
-          // Build proper SSE events the AI SDK expects
-          const encoder = new TextEncoder();
-          const id = generateUUID();
-          const text = Array.isArray(json.parts)
-            ? (json.parts.find((p: any) => p.type === 'text')?.text ?? '')
-            : (json.text || JSON.stringify(json));
-
-          return new Response(
-            new ReadableStream({
-              start(controller) {
-                const events = [
-                  { type: 'text-start', id },
-                  { type: 'text-delta', id, delta: text },
-                  { type: 'text-end', id },
-                ];
-                for (const evt of events) {
-                  controller.enqueue(encoder.encode(`data: ${JSON.stringify(evt)}\n\n`));
-                }
-                controller.close();
-              },
-            }),
-            {
-              headers: {
-                'Content-Type': 'text/event-stream',
-                'Cache-Control': 'no-cache',
-                Connection: 'keep-alive',
-              },
-            },
-          );
-        }
-    
-        // Nếu đã là stream, cứ để useChat lo
         return res;
       },
       prepareSendMessagesRequest({ messages, body }) {
@@ -156,15 +117,15 @@ export function Chat({
 
         const finalMessages = [systemInstruction, ...selected];
 
-        return {
-          body: {
-            chatId: id,
-            model: initialChatModel,
-            messages: finalMessages,
-            stream: false,
-            ...body,
-          },
+        const requestBody = {
+          chatId: id,
+          model: initialChatModel,
+          messages: finalMessages,
+          stream: true,
+          ...body,
         };
+        console.log('[Chat] Sending request with stream:', requestBody.stream);
+        return { body: requestBody };
       },
     }),    
     onData: (dataPart) => {
