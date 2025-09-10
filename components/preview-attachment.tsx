@@ -24,9 +24,17 @@ export const PreviewAttachment = ({
           alt={name ?? 'An image attachment'}
           className="w-full h-full object-cover"
         />
+      ) : contentType === 'application/pdf' ? (
+        <div className="w-full h-full flex items-center justify-center text-xs text-muted-foreground bg-red-50 dark:bg-red-900/20">
+          📄 PDF
+        </div>
+      ) : contentType === 'text/plain' ? (
+        <div className="w-full h-full flex items-center justify-center text-xs text-muted-foreground bg-blue-50 dark:bg-blue-900/20">
+          📝 TXT
+        </div>
       ) : (
         <div className="w-full h-full flex items-center justify-center text-xs text-muted-foreground">
-          File
+          📁 File
         </div>
       )}
 

@@ -5,80 +5,210 @@ const ai = new GoogleGenAI({
   apiKey: process.env.GEMINI_API_KEY,
 });
 
-// ----- Helper: Convert messages and extract system instruction -----
-function convertToGoogleFormat(messages: any): { systemInstruction?: any, contents: any[] } {
-  console.log(`[convertToGoogleFormat] Input:`, JSON.stringify(messages, null, 2));
-  
+// In: @/lib/ai/providers.ts (or wherever your provider is)
+
+// ----- Helper: Convert messages and extract system instruction (DEFINITIVELY FIXED) -----
+async function convertToGoogleFormat(messages: any, limit: number = 10): Promise<{ systemInstruction?: any, contents: any[] }> {
   let messageArray: any[] = [];
 
-  if (Array.isArray(messages)) {
-    messageArray = messages;
-  } else if (messages && typeof messages === "object") {
-    if (messages.messages && Array.isArray(messages.messages)) {
+  // This logic handles input from the Vercel AI SDK which is now an object, not just an array.
+  if (messages && messages.messages && Array.isArray(messages.messages)) {
       messageArray = messages.messages;
-    } else {
-      messageArray = [messages];
-    }
+  } else if (Array.isArray(messages)) {
+      messageArray = messages;
   } else {
-    console.error("[convertToGoogleFormat] Invalid messages format:", messages);
-    throw new Error("Invalid messages format");
+      console.error("[convertToGoogleFormat] Invalid messages format:", messages);
+      throw new Error("Invalid messages format");
   }
 
-  // Extract system message
+  console.log("[convertToGoogleFormat] Processing messages:", JSON.stringify(messageArray, null, 2));
+
+  // Validate that all messages have the required structure
+  for (let i = 0; i < messageArray.length; i++) {
+    const msg = messageArray[i];
+    if (!msg || typeof msg !== 'object') {
+      console.error(`[convertToGoogleFormat] Invalid message at index ${i}:`, msg);
+      throw new Error(`Invalid message at index ${i}`);
+    }
+    if (!msg.role) {
+      console.error(`[convertToGoogleFormat] Message at index ${i} missing role:`, msg);
+      throw new Error(`Message at index ${i} missing role`);
+    }
+    if (!msg.content) {
+      console.error(`[convertToGoogleFormat] Message at index ${i} missing content:`, msg);
+      throw new Error(`Message at index ${i} missing content`);
+    }
+  }
+
   const systemMessage = messageArray.find(msg => msg.role === "system");
-  const nonSystemMessages = messageArray.filter(msg => msg.role !== "system");
+  let nonSystemMessages = messageArray.filter(msg => msg.role !== "system");
 
-  console.log(`[convertToGoogleFormat] Found system message:`, systemMessage);
-  console.log(`[convertToGoogleFormat] Non-system messages count:`, nonSystemMessages.length);
+  if (limit > 0 && nonSystemMessages.length > limit) {
+    nonSystemMessages = nonSystemMessages.slice(-limit);
+  }
 
-  // Convert non-system messages
-  const contents = nonSystemMessages.map((msg, index) => {
-    console.log(`[convertToGoogleFormat] Processing message ${index}:`, msg);
+  const contents = await Promise.all(
+    nonSystemMessages.map(async (msg) => {
+      const role = msg.role === "assistant" ? "model" : "user";
+      
+      // The Vercel AI SDK now puts the parts array in `msg.content`
+      const sourceParts = Array.isArray(msg.content) ? msg.content : [];
+      console.log(`[convertToGoogleFormat] Processing message ${msg.role} with parts:`, JSON.stringify(sourceParts, null, 2));
+      
+      let parts: any[] = [];
+      if (sourceParts.length > 0) {
+        parts = await Promise.all(
+          sourceParts.map(async (part: any): Promise<any> => {
+            
+            // --- CRITICAL FIX START ---
+            // If the part is for text, it must be in the format { text: "..." }
+            if (part.type === "text") {
+              return { text: part.text };
+            }
+            // --- CRITICAL FIX END ---
 
-    let role = "user";
-    let content = "";
+            // Handle images
+            if (part.type === "image" || (part.type === "file" && part.mediaType?.startsWith("image/"))) {
+              const imageData = part.image || part.url;
+              
+              // Skip if no image data
+              if (!imageData) {
+                console.warn("[convertToGoogleFormat] No image data found in part:", part);
+                return null;
+              }
+              
+              // Validate image data
+              if (typeof imageData !== 'string') {
+                console.warn("[convertToGoogleFormat] Invalid image data type:", typeof imageData, imageData);
+                return null;
+              }
+            
+              try {
+                if (typeof imageData === "string") {
+                  if (imageData.startsWith("http")) {
+                    // Fetch từ URL public
+                    console.log("[convertToGoogleFormat] Fetching image from URL:", imageData);
+                    const response = await fetch(imageData);
+                    if (!response.ok) {
+                      console.error(`[convertToGoogleFormat] Failed to fetch image: ${response.statusText}`);
+                      return null;
+                    }
+                    const mimeType = response.headers.get("content-type") || part.mediaType || "image/png";
+                    const buffer = await response.arrayBuffer();
+                    const data = Buffer.from(buffer).toString("base64");
+                    console.log("[convertToGoogleFormat] Successfully processed image from URL");
+                    return { inlineData: { mimeType, data } };
+                  }
+            
+                  // Nếu là data URI
+                  const match = imageData.match(/^data:(image\/\w+);base64,(.*)$/);
+                  if (match) {
+                    console.log("[convertToGoogleFormat] Processing data URI image");
+                    return { inlineData: { mimeType: match[1], data: match[2] } };
+                  }
+                }
+            
+                if (imageData && typeof imageData === 'object' && (imageData as any) instanceof Buffer) {
+                  console.log("[convertToGoogleFormat] Processing Buffer image");
+                  return { inlineData: { mimeType: part.mediaType || "image/png", data: (imageData as Buffer).toString("base64") } };
+                }
+            
+                console.warn("[convertToGoogleFormat] Unsupported image format:", typeof imageData, imageData);
+                return null;
+              } catch (err) {
+                console.error("[convertToGoogleFormat] Error handling image:", err);
+                return null;
+              }
+            }
+            
+            // Handle PDF and text files
+            if (part.type === "file" && (part.mediaType === "application/pdf" || part.mediaType === "text/plain")) {
+              const fileData = part.file || part.url;
+              
+              // Skip if no file data
+              if (!fileData) {
+                console.warn("[convertToGoogleFormat] No file data found in part:", part);
+                return null;
+              }
+              
+              // Validate file data
+              if (typeof fileData !== 'string') {
+                console.warn("[convertToGoogleFormat] Invalid file data type:", typeof fileData, fileData);
+                return null;
+              }
+            
+              try {
+                if (fileData.startsWith("http")) {
+                  // Fetch from URL
+                  console.log("[convertToGoogleFormat] Fetching file from URL:", fileData);
+                  const response = await fetch(fileData);
+                  if (!response.ok) {
+                    console.error(`[convertToGoogleFormat] Failed to fetch file: ${response.statusText}`);
+                    return null;
+                  }
+                  const mimeType = response.headers.get("content-type") || part.mediaType || "application/pdf";
+                  
+                  if (part.mediaType === "text/plain") {
+                    // For text files, send as text content instead of inlineData
+                    const textContent = await response.text();
+                    console.log("[convertToGoogleFormat] Successfully processed text file from URL, content:", JSON.stringify(textContent));
+                    console.log("[convertToGoogleFormat] File name:", part.name);
+                    return { text: `\n--- FILE CONTENT START (${part.name || 'uploaded file'}) ---\n${textContent}\n--- FILE CONTENT END ---\n` };
+                  } else {
+                    // For PDF files, use inlineData
+                    const buffer = await response.arrayBuffer();
+                    const data = Buffer.from(buffer).toString("base64");
+                    console.log("[convertToGoogleFormat] Successfully processed PDF file from URL");
+                    return { inlineData: { mimeType, data } };
+                  }
+                }
+                
+                // Handle data URI
+                const match = fileData.match(/^data:([^;]+);base64,(.*)$/);
+                if (match) {
+                  console.log("[convertToGoogleFormat] Processing data URI file");
+                  if (part.mediaType === "text/plain") {
+                    // For text files, decode and send as text
+                    const textContent = Buffer.from(match[2], 'base64').toString('utf-8');
+                    console.log("[convertToGoogleFormat] Successfully processed text file from data URI, content:", textContent);
+                    return { text: `\n--- FILE CONTENT START (${part.name || 'uploaded file'}) ---\n${textContent}\n--- FILE CONTENT END ---\n` };
+                  } else {
+                    // For PDF files, use inlineData
+                    return { inlineData: { mimeType: match[1], data: match[2] } };
+                  }
+                }
+                
+                console.warn("[convertToGoogleFormat] Unsupported file format:", typeof fileData, fileData);
+                return null;
+              } catch (err) {
+                console.error("[convertToGoogleFormat] Error handling file:", err);
+                return null;
+              }
+            }
+            
+            // Ignore any other part types
+            return null;
+          })
+        );
+        parts = parts.filter(p => p != null);
+      }
+      
+      console.log(`[convertToGoogleFormat] Final message for ${role}:`, JSON.stringify({ role, parts }, null, 2));
+      return { role, parts };
+    })
+  );
 
-    // Convert roles: assistant → model, keep user as user
-    if (msg.role === "assistant") {
-      role = "model";
-    } else {
-      role = "user"; // Default to user for any other role
-    }
-
-    // Extract content
-    if (typeof msg.content === "string") {
-      content = msg.content;
-    } else if (Array.isArray(msg.content)) {
-      content = msg.content
-        .filter((part: any) => part.type === "text")
-        .map((part: any) => part.text || "")
-        .join("");
-    } else if (msg.parts && Array.isArray(msg.parts)) {
-      content = msg.parts
-        .filter((part: any) => part.type === "text")
-        .map((part: any) => part.text || "")
-        .join("");
-    } else if (msg.text) {
-      content = msg.text;
-    }
-
-    return {
-      role,
-      parts: [{ text: content }],
-    };
-  });
-
-  // Prepare system instruction
+  // System instruction processing (should be correct already)
   let systemInstruction = undefined;
   if (systemMessage) {
     let systemContent = "";
-    if (typeof systemMessage.content === "string") {
-      systemContent = systemMessage.content;
-    } else if (Array.isArray(systemMessage.content)) {
-      systemContent = systemMessage.content
-        .filter((part: any) => part.type === "text")
-        .map((part: any) => part.text || "")
-        .join("");
+    if (Array.isArray(systemMessage.content)) {
+        systemContent = systemMessage.content
+            .filter((part: any) => part.type === "text")
+            .map((part: any) => part.text || "")
+            .join("\n");
+    } else if (typeof systemMessage.content === 'string') {
+        systemContent = systemMessage.content;
     }
 
     if (systemContent) {
@@ -88,74 +218,81 @@ function convertToGoogleFormat(messages: any): { systemInstruction?: any, conten
     }
   }
 
-  console.log(`[convertToGoogleFormat] System instruction:`, JSON.stringify(systemInstruction, null, 2));
-  console.log(`[convertToGoogleFormat] Contents:`, JSON.stringify(contents, null, 2));
-
   return { systemInstruction, contents };
 }
 
-// ----- Stream function -----
+// ----- Stream function (UPDATED) -----
 async function streamGemini(model: string, options: any) {
   console.log(`[streamGemini] Called with model: ${model}`);
-  console.log(`[streamGemini] Full options:`, JSON.stringify(options, null, 2));
-  console.log(`[streamGemini] Options keys:`, Object.keys(options));
   
   try {
-    // Don't use convertToModelMessages - work directly with what we get
     const messages = options.prompt || options.messages || [];
-    const { systemInstruction, contents } = convertToGoogleFormat(messages);
+    // MUST use await here
+    const { systemInstruction, contents } = await convertToGoogleFormat(messages, 10);
     
+    // Since gemini-2.5 models are multimodal, no need to switch models.
+    // The `model` parameter is used directly.
     const requestPayload: any = {
-      model,
+      model, // Use the model passed in directly
       contents,
       generationConfig: {
         temperature: options.temperature ?? 1,
-        maxOutputTokens: options.maxTokens ?? 1024,
+        maxOutputTokens: options.maxTokens ?? 8192,
         topP: options.topP ?? 1,
       },
     };
 
-    // Add system instruction if present
     if (systemInstruction) {
       requestPayload.systemInstruction = systemInstruction;
     }
     
     console.log(`[streamGemini] Calling Gemini API with:`, JSON.stringify(requestPayload, null, 2));
+    console.log(`[streamGemini] Request payload contents:`, JSON.stringify(requestPayload.contents, null, 2));
 
-    const responseIterator = await ai.models.generateContentStream(requestPayload);
-    console.log(`[streamGemini] responseIterator:`, responseIterator);
-
-    console.log(`[streamGemini] Got response iterator, starting stream...`);
-  
-    console.log(`[streamGemini] Returning stream object to Vercel SDK...`);
-
+    let responseIterator: any;
+    let retryCount = 0;
+    const maxRetries = 3;
+    
+    while (retryCount <= maxRetries) {
+      try {
+        responseIterator = await ai.models.generateContentStream(requestPayload);
+        console.log(`[streamGemini] Successfully got response iterator`);
+        break;
+      } catch (apiError: any) {
+        console.error(`[streamGemini] Google API error (attempt ${retryCount + 1}):`, apiError);
+        
+        // Check if it's a 503 error (overloaded) and we can retry
+        if (apiError?.status === 503 && retryCount < maxRetries) {
+          const delay = Math.pow(2, retryCount) * 1000; // Exponential backoff: 1s, 2s, 4s
+          console.log(`[streamGemini] Model ${model} overloaded, retrying in ${delay}ms... (attempt ${retryCount + 1}/${maxRetries + 1})`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+          retryCount++;
+          continue;
+        }
+        
+        console.error(`[streamGemini] Error details:`, {
+          message: apiError?.message,
+          stack: apiError?.stack,
+          name: apiError?.name
+        });
+        throw apiError;
+      }
+    }
+    
     return {
       stream: new ReadableStream({
         async start(controller) {
           try {
-            console.log('[streamGemini] Starting to iterate over response...');
-            let chunkCount = 0;
-  
             for await (const chunk of responseIterator) {
-              chunkCount++;
-              console.log(`[streamGemini] Chunk ${chunkCount} received:`, JSON.stringify(chunk, null, 2));
-  
               const text = chunk.text;
               if (text) {
-                console.log(`[streamGemini] Enqueueing text chunk ${chunkCount}:`, text);
                 controller.enqueue({
                   type: "text-delta",
-                  // Add 'delta' so the SDK doesn't crash when it reads chunk.delta.length
                   delta: text,
-                  // Keep 'textDelta' for compatibility with other consumers
                   textDelta: text,
                 });
-              } else {
-                console.log(`[streamGemini] Chunk ${chunkCount} had no text content`);
               }
             }
-  
-            console.log(`[streamGemini] Stream completed successfully. Total chunks: ${chunkCount}`);
             controller.enqueue({
               type: "finish",
               finishReason: "stop",
@@ -175,44 +312,50 @@ async function streamGemini(model: string, options: any) {
   }
 }
 
-// ----- Non-stream function -----
+// ----- Non-stream function (UPDATED) -----
+// ----- Non-stream function (DEFINITIVELY FIXED) -----
 async function callGemini(model: string, options: any) {
   console.log(`[callGemini] Called with model: ${model}`);
-  console.log(`[callGemini] Full options:`, JSON.stringify(options, null, 2));
   
   try {
-    // Align non-stream message formatting with streaming path
     const messages = options.prompt || options.messages || [];
-    const { systemInstruction, contents } = convertToGoogleFormat(messages);
+    const { systemInstruction, contents } = await convertToGoogleFormat(messages);
     
     const requestPayload: any = {
       model,
       contents,
       generationConfig: {
         temperature: options.temperature ?? 1,
-        maxOutputTokens: options.maxTokens ?? 1024,
+        maxOutputTokens: options.maxTokens ?? 8192,
         topP: options.topP ?? 1,
       },
     };
 
-    // Add system instruction if present
     if (systemInstruction) {
       requestPayload.systemInstruction = systemInstruction;
     }
 
     console.log(`[callGemini] Request payload:`, JSON.stringify(requestPayload, null, 2));
 
+    // The object returned here IS the final response object.
     const response = await ai.models.generateContent(requestPayload);
 
-    console.log(`[callGemini] Response:`, response.text);
+    // ******** FIX IS HERE ********
+    // Access 'candidates' and 'usageMetadata' directly from the response object.
+    // There is no extra '.response' nesting.
+    const responseText = response.candidates?.[0]?.content?.parts?.[0]?.text || "";
+    const usageMetadata = response.usageMetadata;
+    // ***************************
+
+    console.log(`[callGemini] Response:`, responseText);
 
     return {
-      content: [{ type: "text" as const, text: response.text || "" }],
+      content: [{ type: "text" as const, text: responseText }],
       finishReason: "stop" as const,
       usage: { 
-        promptTokens: response.usageMetadata?.promptTokenCount || 0, 
-        completionTokens: response.usageMetadata?.candidatesTokenCount || 0, 
-        totalTokens: response.usageMetadata?.totalTokenCount || 0 
+        promptTokens: usageMetadata?.promptTokenCount || 0, 
+        completionTokens: usageMetadata?.candidatesTokenCount || 0, 
+        totalTokens: usageMetadata?.totalTokenCount || 0 
       },
       warnings: [],
     };
@@ -222,7 +365,7 @@ async function callGemini(model: string, options: any) {
   }
 }
 
-// ----- Custom provider -----
+// ----- Custom provider (ORIGINAL MODELS RESTORED) -----
 export const myProvider = customProvider({
   languageModels: {
     "gemini-2.5-pro": {

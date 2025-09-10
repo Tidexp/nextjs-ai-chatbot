@@ -57,29 +57,39 @@ export function getStreamContext() {
 
 // Helper function to convert schema messages to internal ChatMessage format
 function convertSchemaMessagesToUIMessages(messages: PostRequestBody['messages']): any[] {
-  return messages.map((msg) => ({
-    id: generateUUID(),
-    role: msg.role,
-    parts: Array.isArray(msg.content)
-      ? msg.content.map((part) => {
-          if (part.type === "text") {
-            return { type: "text" as const, text: part.text };
-          } else if (part.type === "file") {
-            return { type: "image" as const, image: part.url };
+  return messages.map((msg) => {
+    let parts: any[] = [];
+
+    if (Array.isArray(msg.content)) {
+      // Map and filter in one step. Only keep valid parts.
+      parts = msg.content
+        .map((part) => {
+          if (part.type === 'text') {
+            return { type: 'text' as const, text: part.text };
           }
-          return { type: "text" as const, text: JSON.stringify(part) };
+          if (part.type === 'file' && part.mediaType.startsWith('image/')) {
+            // Convert valid image files to the 'image' part type
+            return { type: 'image' as const, image: part.url };
+          }
+          if (part.type === 'file' && (part.mediaType === 'application/pdf' || part.mediaType === 'text/plain')) {
+            // Convert PDF and text files to the 'file' part type
+            return { type: 'file' as const, file: part.url, mediaType: part.mediaType, name: part.name };
+          }
+          // Any other part type (like non-image files) will be ignored
+          return null;
         })
-      : [
-          {
-            type: "text" as const,
-            text:
-              typeof msg.content === "string"
-                ? msg.content
-                : JSON.stringify(msg.content),
-          },
-        ],
-    createdAt: new Date().toISOString(),
-  }));
+        .filter(p => p !== null); // Remove null entries
+    } else if (typeof msg.content === 'string') {
+      parts = [{ type: 'text' as const, text: msg.content }];
+    }
+
+    return {
+      id: generateUUID(),
+      role: msg.role,
+      parts, // Use the cleaned and validated parts array
+      createdAt: new Date().toISOString(),
+    };
+  });
 }
 
 export async function POST(request: Request) {
@@ -244,22 +254,40 @@ export async function POST(request: Request) {
         let started = false;
         let currentId = generateUUID();
 
-        const result = await streamText({
-          model: myProvider.languageModel(selectedChatModel as GeminiModelId),
-          system: systemPrompt({ selectedChatModel }),
-          messages: convertToModelMessages(allUIMessages),
+        const streamMessages = allUIMessages
+            .filter(msg => msg.role !== 'system') // Lọc bỏ message hệ thống vì đã có thuộc tính 'system' riêng
+          .map(msg => {
+            const parts = (msg as any).parts || [];
+            const processed = {
+              role: msg.role as 'user' | 'assistant', // Ép kiểu role cho tương thích
+              content: parts.length > 0 ? parts : [{ type: 'text', text: '' }], // Ensure we always have valid content
+            };
+            console.log(`[POST] Processed message for streamText:`, JSON.stringify(processed, null, 2));
+            return processed;
+          });
+        
+        console.log(`[POST] All processed messages for streamText:`, JSON.stringify(streamMessages, null, 2));
+        
+        // Use our custom provider directly for streaming
+        const result = await myProvider.languageModel(selectedChatModel as GeminiModelId).doStream({
+          prompt: streamMessages,
+          temperature: 1,
+          maxTokens: 1024,
+          topP: 1,
+        } as any);
 
-          onChunk: async (event) => {
-            try {
-              const anyEvent = event as any;
-              const text =
-                anyEvent.textDelta ??
-                anyEvent.delta ??
-                anyEvent?.delta?.text ??
-                anyEvent?.chunk?.candidates?.[0]?.content?.parts?.[0]?.text;
-
-              if (!text) return;
-
+        // Process the stream from our custom provider
+        console.log('[POST] Starting to consume stream...');
+        const reader = result.stream.getReader();
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            
+            const anyChunk: any = value as any;
+            const text = anyChunk.textDelta || anyChunk.delta || anyChunk.text || '';
+            
+            if (text) {
               if (!started) {
                 started = true;
                 await dataStream.write({ type: 'text-start', id: currentId });
@@ -270,23 +298,14 @@ export async function POST(request: Request) {
                 id: currentId,
                 delta: text,
               });
-            } catch (err) {
-              console.error('[POST] onChunk error:', err);
             }
-          },
+          }
 
-          onFinish: async () => {
             if (started) {
               await dataStream.write({ type: 'text-end', id: currentId });
             }
-          },
-        });
-
-        // IMPORTANT: Consume the stream to trigger the provider
-        console.log('[POST] Starting to consume stream...');
-        for await (const chunk of result.textStream) {
-          console.log('[POST] Consuming chunk:', chunk);
-          // The onChunk callback should handle this, but we need to consume the stream
+        } finally {
+          reader.releaseLock();
         }
         console.log('[POST] Stream consumption completed');
       },
@@ -323,26 +342,183 @@ export async function POST(request: Request) {
       });
     } else {
       // Non-streaming: prefer generateText; fallback to streaming on provider 503
+      // For multimodal messages, force streaming to avoid issues with generateText
+      const hasMultimodalContent = allUIMessages.some(msg => 
+        (msg as any).parts?.some((part: any) => 
+          part.type === 'image' || 
+          (part.type === 'file' && (part.mediaType === 'application/pdf' || part.mediaType === 'text/plain'))
+        )
+      );
+      
       let fullText = '';
-      try {
+      
+      if (hasMultimodalContent) {
+        console.log('[POST] Detected multimodal content, using streaming instead of generateText');
+        // Use our custom provider directly for multimodal processing
+        console.log('[POST] Using custom provider directly for multimodal processing');
+        
+        let result;
+        let currentModel = selectedChatModel;
+        
+        try {
+          result = await myProvider.languageModel(currentModel as GeminiModelId).doStream({
+            prompt: allUIMessages
+              .filter(msg => msg.role !== 'system')
+              .map(msg => {
+                const parts = (msg as any).parts || [];
+                return {
+                  role: msg.role as 'user' | 'assistant',
+                  content: parts,
+                };
+              }),
+            temperature: 1,
+            maxTokens: 1024,
+            topP: 1,
+          } as any);
+        } catch (error: any) {
+          // If the requested model is overloaded, show user-friendly message
+          if (error?.status === 503) {
+            console.log(`[POST] ${currentModel} overloaded, informing user`);
+            fullText = `⚠️ **Model Overload Notice**\n\nThe ${currentModel} model is currently experiencing high demand and is temporarily unavailable. This is a temporary issue on Google's side.\n\n**What you can do:**\n- Try again in a few minutes\n- Switch to a different model (like gemini-2.5-flash)\n- The image processing is working correctly - this is just a capacity issue\n\n*Error details: ${error?.message || 'Service temporarily unavailable'}*`;
+            return Response.json({
+              type: 'message',
+              message: {
+                id: generateUUID(),
+                role: 'assistant',
+                parts: [{ type: 'text', text: fullText }],
+                createdAt: new Date().toISOString(),
+                attachments: [],
+              },
+              parts: [{ type: 'text', text: fullText }],
+              text: fullText,
+            });
+          } else {
+            throw error;
+          }
+        }
+        
+        // Process the stream from our custom provider
+        const reader = result.stream.getReader();
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            
+            const anyChunk: any = value as any;
+            const t = anyChunk.textDelta || anyChunk.delta || anyChunk.text || '';
+            if (t) fullText += t;
+          }
+        } finally {
+          reader.releaseLock();
+        }
+      } else {
+        // Use generateText for text-only messages
+        try {
+        const processedMessages = allUIMessages
+          .filter(msg => msg.role !== 'system') // Lọc bỏ message hệ thống vì đã có thuộc tính 'system' riêng
+          .map(msg => {
+            const parts = (msg as any).parts || [];
+            
+            // Convert parts to the format expected by the AI SDK
+            const content = parts.map((part: any) => {
+              if (part.type === 'text') {
+                return { type: 'text', text: part.text || '' };
+              } else if (part.type === 'image') {
+                return { 
+                  type: 'image', 
+                  image: part.image 
+                };
+              } else if (part.type === 'file' && (part.mediaType === 'application/pdf' || part.mediaType === 'text/plain')) {
+                return {
+                  type: 'file',
+                  file: part.file || part.url,
+                  mediaType: part.mediaType,
+                  name: part.name
+                };
+              }
+              // Skip unknown part types
+              return null;
+            }).filter((part: any) => part !== null);
+            
+            const processed = {
+              role: msg.role as 'user' | 'assistant',
+              content: content.length > 0 ? content : [{ type: 'text', text: '' }],
+            };
+            console.log(`[POST] Processed message for generateText:`, JSON.stringify(processed, null, 2));
+            return processed;
+          });
+        
+        console.log(`[POST] All processed messages for generateText:`, JSON.stringify(processedMessages, null, 2));
+        
         const result = await generateText({
           model: myProvider.languageModel(selectedChatModel as GeminiModelId),
           system: systemPrompt({ selectedChatModel }),
-          messages: convertToModelMessages(allUIMessages),
+          messages: processedMessages,
         });
         fullText = result.text || '';
       } catch (genErr: any) {
+          // Check if it's a model overload error
+          if (genErr?.status === 503) {
+            console.log(`[POST] ${selectedChatModel} overloaded in generateText, informing user`);
+            fullText = `⚠️ **Model Overload Notice**\n\nThe ${selectedChatModel} model is currently experiencing high demand and is temporarily unavailable. This is a temporary issue on Google's side.\n\n**What you can do:**\n- Try again in a few minutes\n- Switch to a different model (like gemini-2.5-flash)\n- The image processing is working correctly - this is just a capacity issue\n\n*Error details: ${genErr?.message || 'Service temporarily unavailable'}*`;
+            
+            // Save assistant message
+            const assistantId = generateUUID();
+            const assistantMessage: ChatMessage = {
+              id: assistantId,
+              role: 'assistant',
+              parts: [{ type: 'text', text: fullText }] as any,
+              createdAt: new Date().toISOString(),
+              attachments: [],
+            } as any;
+
+            await saveMessages({
+              messages: [
+                {
+                  id: assistantId,
+                  role: 'assistant',
+                  parts: assistantMessage.parts as any,
+                  createdAt: new Date(),
+                  attachments: [],
+                  chatId,
+                },
+              ],
+            });
+
+            return Response.json({
+              type: 'message',
+              message: assistantMessage,
+              parts: assistantMessage.parts,
+              text: fullText,
+            });
+          }
+          
         console.warn('[POST] generateText failed, falling back to streamText:', genErr?.message || genErr);
         // Fallback: stream and assemble
-        const result = await streamText({
-          model: myProvider.languageModel(selectedChatModel as GeminiModelId),
-          system: systemPrompt({ selectedChatModel }),
-          messages: convertToModelMessages(allUIMessages),
+          const fallbackMessages = allUIMessages
+            .filter(msg => msg.role !== 'system') // Lọc bỏ message hệ thống vì đã có thuộc tính 'system' riêng
+            .map(msg => {
+              const parts = (msg as any).parts || [];
+              const processed = {
+              role: msg.role as 'user' | 'assistant', // Ép kiểu role cho tương thích
+                content: parts.length > 0 ? parts : [{ type: 'text', text: '' }], // Ensure we always have valid content
+              };
+              console.log(`[POST] Processed message for streamText fallback:`, JSON.stringify(processed, null, 2));
+              return processed;
+            });
+          
+          console.log(`[POST] All processed messages for streamText fallback:`, JSON.stringify(fallbackMessages, null, 2));
+          
+          const result = await streamText({
+            model: myProvider.languageModel(selectedChatModel as GeminiModelId),
+            system: systemPrompt({ selectedChatModel }),
+            messages: fallbackMessages,
         });
         for await (const chunk of result.textStream) {
           const anyChunk: any = chunk as any;
           const t = anyChunk.textDelta || anyChunk.delta || anyChunk.text || '';
           if (t) fullText += t;
+          }
         }
       }
 
