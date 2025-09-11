@@ -16,6 +16,8 @@
     "db:pull": "drizzle-kit pull",
     "db:check": "drizzle-kit check",
     "db:up": "drizzle-kit up",
+    "db:test": "tsx scripts/test-db-connection.ts",
+    "db:test-chat": "tsx scripts/test-chat-creation.ts",
     "test": "export PLAYWRIGHT=True && pnpm exec playwright test"
   },
   "dependencies": {

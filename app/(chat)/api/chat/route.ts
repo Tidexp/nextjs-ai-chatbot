@@ -187,8 +187,9 @@ export async function POST(request: Request) {
     }
 
     // Extract or generate chat ID
-    let chatId = (requestBody as any).chatId || generateUUID();
-    console.log(`[POST] Chat ID: ${chatId}`);
+    let chatId = requestBody.chatId || generateUUID();
+    console.log(`[POST] Received chatId from request: ${requestBody.chatId}`);
+    console.log(`[POST] Using chatId: ${chatId}`);
 
     // Convert schema messages to UI messages
     const uiMessages = convertSchemaMessagesToUIMessages(messages);

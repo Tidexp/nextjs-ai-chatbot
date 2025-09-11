@@ -53,11 +53,16 @@ export async function getUser(email: string): Promise<Array<User>> {
   }
 }
 
-export async function createUser(email: string, password: string) {
+export async function createUser(email: string, password: string, displayName?: string) {
   const hashedPassword = generateHashedPassword(password);
 
   try {
-    return await db.insert(user).values({ email, password: hashedPassword });
+    return await db.insert(user).values({ 
+      email, 
+      password: hashedPassword,
+      type: 'regular',
+      displayName: displayName || null
+    });
   } catch (error) {
     throw new ChatSDKError('bad_request:database', 'Failed to create user');
   }
@@ -68,11 +73,19 @@ export async function createGuestUser() {
   const password = generateHashedPassword(generateUUID());
 
   try {
-    return await db.insert(user).values({ email, password }).returning({
+    return await db.insert(user).values({ 
+      email, 
+      password,
+      type: 'guest',
+      displayName: null
+    }).returning({
       id: user.id,
       email: user.email,
+      type: user.type,
+      displayName: user.displayName,
     });
   } catch (error) {
+    console.error('Database error in createGuestUser:', error);
     throw new ChatSDKError(
       'bad_request:database',
       'Failed to create guest user',
@@ -92,6 +105,14 @@ export async function saveChat({
   visibility: VisibilityType;
 }) {
   try {
+    // First check if user exists
+    const existingUser = await db.select().from(user).where(eq(user.id, userId)).limit(1);
+    if (existingUser.length === 0) {
+      console.error('User not found in database:', userId);
+      throw new ChatSDKError('bad_request:database', 'User not found');
+    }
+    
+    console.log('Creating chat for user:', userId, 'with title:', title);
     return await db.insert(chat).values({
       id,
       createdAt: new Date(),
@@ -100,6 +121,7 @@ export async function saveChat({
       visibility,
     });
   } catch (error) {
+    console.error('Database error in saveChat:', error);
     throw new ChatSDKError('bad_request:database', 'Failed to save chat');
   }
 }
@@ -280,13 +302,11 @@ export async function getVotesByChatId({ id }: { id: string }) {
 export async function saveDocument({
   id,
   title,
-  kind,
   content,
   userId,
 }: {
   id: string;
   title: string;
-  kind: ArtifactKind;
   content: string;
   userId: string;
 }) {
@@ -296,9 +316,9 @@ export async function saveDocument({
       .values({
         id,
         title,
-        kind,
         content,
         userId,
+        text: 'text',
         createdAt: new Date(),
       })
       .returning();

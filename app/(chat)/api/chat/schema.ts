@@ -23,6 +23,7 @@ const messageSchema = z.object({
 });
 
 export const postRequestBodySchema = z.object({
+  chatId: z.string().optional(), // Add chatId to the schema
   model: z.string().min(1), // ví dụ: "meta-llama/llama-guard-4-12b"
   messages: z.array(messageSchema).min(1),
   temperature: z.number().min(0).max(2).default(1),

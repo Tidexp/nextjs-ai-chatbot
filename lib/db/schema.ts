@@ -9,12 +9,18 @@ import {
   primaryKey,
   foreignKey,
   boolean,
+  pgEnum,
 } from 'drizzle-orm/pg-core';
+
+// Define the user_type enum
+export const userTypeEnum = pgEnum('user_type', ['guest', 'regular']);
 
 export const user = pgTable('User', {
   id: uuid('id').primaryKey().notNull().defaultRandom(),
   email: varchar('email', { length: 64 }).notNull(),
   password: varchar('password', { length: 64 }),
+  type: userTypeEnum('type').default('guest'),
+  displayName: varchar('displayName', { length: 100 }),
 });
 
 export type User = InferSelectModel<typeof user>;
@@ -109,12 +115,10 @@ export const document = pgTable(
     createdAt: timestamp('createdAt').notNull(),
     title: text('title').notNull(),
     content: text('content'),
-    kind: varchar('text', { enum: ['text', 'code', 'image', 'sheet'] })
-      .notNull()
-      .default('text'),
     userId: uuid('userId')
       .notNull()
       .references(() => user.id),
+    text: varchar('text').notNull().default('text'),
   },
   (table) => {
     return {

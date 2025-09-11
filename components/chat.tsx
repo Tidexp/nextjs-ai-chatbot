@@ -124,6 +124,7 @@ export function Chat({
           stream: true,
           ...body,
         };
+        console.log('[Chat] Sending request with chatId:', id);
         console.log('[Chat] Sending request with stream:', requestBody.stream);
         return { body: requestBody };
       },

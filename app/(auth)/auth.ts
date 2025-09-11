@@ -66,7 +66,9 @@ export const {
       id: 'guest',
       credentials: {},
       async authorize() {
+        console.log('🔍 Creating guest user in auth...');
         const [guestUser] = await createGuestUser();
+        console.log('✅ Guest user created in auth:', guestUser);
         return { ...guestUser, type: 'guest' };
       },
     }),
@@ -74,16 +76,20 @@ export const {
   callbacks: {
     async jwt({ token, user }) {
       if (user) {
+        console.log('🔍 JWT callback - user:', user);
         token.id = user.id as string;
         token.type = user.type;
+        console.log('✅ JWT callback - token updated:', { id: token.id, type: token.type });
       }
 
       return token;
     },
     async session({ session, token }) {
       if (session.user) {
+        console.log('🔍 Session callback - token:', { id: token.id, type: token.type });
         session.user.id = token.id;
         session.user.type = token.type;
+        console.log('✅ Session callback - session updated:', { id: session.user.id, type: session.user.type });
       }
 
       return session;
