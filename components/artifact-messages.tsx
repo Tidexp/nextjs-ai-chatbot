@@ -17,6 +17,7 @@ interface ArtifactMessagesProps {
   regenerate: UseChatHelpers<ChatMessage>['regenerate'];
   isReadonly: boolean;
   artifactStatus: UIArtifact['status'];
+  sendMessage: UseChatHelpers<ChatMessage>['sendMessage'];
 }
 
 function PureArtifactMessages({
@@ -27,6 +28,7 @@ function PureArtifactMessages({
   setMessages,
   regenerate,
   isReadonly,
+  sendMessage,
 }: ArtifactMessagesProps) {
   const {
     containerRef: messagesContainerRef,
@@ -44,10 +46,14 @@ function PureArtifactMessages({
       ref={messagesContainerRef}
       className="flex flex-col gap-4 h-full items-center overflow-y-scroll px-4 pt-20"
     >
-      {messages.map((message, index) => (
+      {messages.map((message, index) => {
+        // Create a stable key that doesn't change on re-renders
+        const messageKey = message.id ? `${message.id}-artifact-${index}` : `temp-artifact-message-${index}`;
+        
+        return (
         <PreviewMessage
           chatId={chatId}
-          key={message.id}
+          key={messageKey}
           message={message}
           isLoading={status === 'streaming' && index === messages.length - 1}
           vote={
@@ -61,8 +67,11 @@ function PureArtifactMessages({
           requiresScrollPadding={
             hasSentMessage && index === messages.length - 1
           }
+          messages={messages}
+          sendMessage={sendMessage}
         />
-      ))}
+        );
+      })}
 
       {status === 'submitted' &&
         messages.length > 0 &&

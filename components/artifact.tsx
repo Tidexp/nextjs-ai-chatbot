@@ -320,6 +320,7 @@ function PureArtifact({
                   regenerate={regenerate}
                   isReadonly={isReadonly}
                   artifactStatus={artifact.status}
+                  sendMessage={sendMessage}
                 />
 
                 <div className="flex flex-row gap-2 relative items-end w-full px-4 pb-4">

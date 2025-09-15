@@ -19,6 +19,7 @@ interface MessagesProps {
   regenerate: UseChatHelpers<ChatMessage>['regenerate'];
   isReadonly: boolean;
   isArtifactVisible: boolean;
+  sendMessage: UseChatHelpers<ChatMessage>['sendMessage'];
 }
 
 function PureMessages({
@@ -29,6 +30,7 @@ function PureMessages({
   setMessages,
   regenerate,
   isReadonly,
+  sendMessage,
 }: MessagesProps) {
   const {
     containerRef: messagesContainerRef,
@@ -49,9 +51,13 @@ function PureMessages({
         <ConversationContent className="flex flex-col gap-6">
           {messages.length === 0 && <Greeting />}
 
-          {messages.map((message, index) => (
+          {messages.map((message, index) => {
+            // Create a stable key that doesn't change on re-renders
+            const messageKey = message.id ? `${message.id}-${index}` : `temp-message-${index}`;
+            
+            return (
             <PreviewMessage
-              key={message.id}
+              key={messageKey}
               chatId={chatId}
               message={message}
               isLoading={status === 'streaming' && messages.length - 1 === index}
@@ -66,8 +72,11 @@ function PureMessages({
               requiresScrollPadding={
                 hasSentMessage && index === messages.length - 1
               }
+              messages={messages}
+              sendMessage={sendMessage}
             />
-          ))}
+            );
+          })}
 
           {status === 'submitted' &&
             messages.length > 0 &&

@@ -1,7 +1,7 @@
 'use client';
 import cx from 'classnames';
 import { AnimatePresence, motion } from 'framer-motion';
-import { memo, useState } from 'react';
+import { memo, useState, useRef } from 'react';
 import type { Vote } from '@/lib/db/schema';
 import { DocumentToolResult } from './document';
 import { PencilEditIcon, SparklesIcon } from './icons';
@@ -27,6 +27,8 @@ import { MessageReasoning } from './message-reasoning';
 import type { UseChatHelpers } from '@ai-sdk/react';
 import type { ChatMessage } from '@/lib/types';
 import { useDataStream } from './data-stream-provider';
+import Image from 'next/image';
+import { FilePreviewPanel } from './file-preview-panel';
 
 // Type narrowing is handled by TypeScript's control flow analysis
 // The AI SDK provides proper discriminated unions for tool calls
@@ -40,6 +42,8 @@ const PurePreviewMessage = ({
   regenerate,
   isReadonly,
   requiresScrollPadding,
+  messages,
+  sendMessage,
 }: {
   chatId: string;
   message: ChatMessage;
@@ -49,30 +53,43 @@ const PurePreviewMessage = ({
   regenerate: UseChatHelpers<ChatMessage>['regenerate'];
   isReadonly: boolean;
   requiresScrollPadding: boolean;
+  messages: ChatMessage[];
+  sendMessage: UseChatHelpers<ChatMessage>['sendMessage'];
 }) => {
   const [mode, setMode] = useState<'view' | 'edit'>('view');
+  const [previewFile, setPreviewFile] = useState<{
+    url: string;
+    name: string;
+    mediaType: string;
+  } | null>(null);
+  const [isPreviewOpen, setIsPreviewOpen] = useState(false);
 
-  const attachmentsFromMessage = message.parts.filter(
-    (part) => part.type === 'file',
-  );
+  const attachmentsFromMessage: any[] = [];
+  const messageId = message.id || `temp-${Date.now()}-${Math.random()}`;
+  const stableId = useRef(messageId).current; // Use a stable ID that doesn't change on re-renders
+
 
   useDataStream();
 
   return (
     <AnimatePresence>
       <motion.div
+        key={`motion-div-${stableId}`}
         data-testid={`message-${message.role}`}
-        className="px-4 mx-auto w-full max-w-3xl group/message"
+        className="px-4 mx-auto w-full max-w-3xl group/message group"
         initial={{ y: 5, opacity: 0 }}
         animate={{ y: 0, opacity: 1 }}
         data-role={message.role}
       >
         <div
           className={cn(
-            'flex gap-4 w-full group-data-[role=user]/message:ml-auto group-data-[role=user]/message:max-w-2xl',
+            'flex w-full',
             {
+              'gap-4': message.role === 'user' || mode === 'edit',
+              'gap-3 items-start': message.role === 'assistant' && mode !== 'edit',
               'w-full': mode === 'edit',
-              'group-data-[role=user]/message:w-fit': mode !== 'edit',
+              'group-data-[role=user]/message:ml-auto group-data-[role=user]/message:max-w-2xl group-data-[role=user]/message:w-fit': 
+                mode !== 'edit' && message.role === 'user',
             },
           )}
         >
@@ -85,7 +102,9 @@ const PurePreviewMessage = ({
           )}
 
           <div
-            className={cn('flex flex-col gap-4 w-full', {
+            className={cn('flex flex-col w-full', {
+              'gap-4': message.role === 'user',
+              'gap-2': message.role === 'assistant',
               'min-h-96': message.role === 'assistant' && requiresScrollPadding,
             })}
           >
@@ -94,16 +113,19 @@ const PurePreviewMessage = ({
                 data-testid={`message-attachments`}
                 className="flex flex-row gap-2 justify-end"
               >
-                {attachmentsFromMessage.map((attachment) => (
-                  <PreviewAttachment
-                    key={attachment.url}
-                    attachment={{
-                      name: attachment.filename ?? 'file',
-                      contentType: attachment.mediaType,
-                      url: attachment.url,
-                    }}
-                  />
-                ))}
+                {attachmentsFromMessage.map((attachment) => {
+                  const att = attachment as any;
+                  return (
+                    <PreviewAttachment
+                      key={att.url || att.image}
+                      attachment={{
+                        name: att.filename ?? (att.type === 'image' ? 'image' : 'file'),
+                        contentType: att.mediaType || (att.type === 'image' ? 'image/png' : 'application/octet-stream'),
+                        url: att.url || att.image,
+                      }}
+                    />
+                  );
+                })}
               </div>
             )}
 
@@ -127,9 +149,14 @@ const PurePreviewMessage = ({
                 }
               }
 
-              return message.parts?.map((part, index) => {
+              return (
+                <div key={`message-parts-${stableId}`} className={cn('flex flex-col gap-2', {
+                  'items-center': message.role === 'user',
+                  'items-start': message.role === 'assistant',
+                })}>
+                  {message.parts?.map((part, index) => {
               const { type } = part;
-              const key = `message-${message.id}-part-${index}`;
+              const key = `message-${stableId}-part-${index}`;
 
               if (type === 'reasoning' && part.text?.trim().length > 0) {
                 return (
@@ -141,34 +168,103 @@ const PurePreviewMessage = ({
                 );
               }
 
+              if ((part as any).type === 'image') {
+                return (
+                  <div key={key} className="max-w-xs group relative">
+                    <div
+                      className="block cursor-pointer hover:opacity-90 transition-opacity"
+                      onClick={() => {
+                        setPreviewFile({
+                          url: (part as any).image,
+                          name: 'image',
+                          mediaType: 'image/png'
+                        });
+                        setIsPreviewOpen(true);
+                      }}
+                    >
+                      <Image
+                        src={(part as any).image}
+                        alt="Uploaded image"
+                        width={200}
+                        height={200}
+                        className="rounded-lg max-w-full h-auto"
+                        style={{ maxHeight: '200px' }}
+                      />
+                    </div>
+                    <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        className="h-6 px-2 text-xs"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setPreviewFile({
+                            url: (part as any).image,
+                            name: 'image',
+                            mediaType: 'image/png'
+                          });
+                          setIsPreviewOpen(true);
+                        }}
+                      >
+                        View
+                      </Button>
+                    </div>
+                  </div>
+                );
+              }
+
+              if (part.type === 'file') {
+                const fileUrl = (part as any).file || (part as any).url;
+                const fileName = (part as any).name || 'file';
+                const mediaType = (part as any).mediaType || 'application/octet-stream';
+                
+                return (
+                  <div key={key} className="max-w-xs group relative">
+                    <div 
+                      className="border rounded-lg p-3 bg-muted/50 hover:bg-muted transition-colors cursor-pointer"
+                      onClick={() => {
+                        setPreviewFile({
+                          url: fileUrl,
+                          name: fileName,
+                          mediaType: mediaType
+                        });
+                        setIsPreviewOpen(true);
+                      }}
+                    >
+                      <div className="flex items-center gap-2">
+                        {mediaType === 'text/plain' ? (
+                          <div className="size-8 flex items-center justify-center bg-blue-100 dark:bg-blue-900/20 rounded text-blue-600 dark:text-blue-400 text-xs font-bold">
+                            📝
+                          </div>
+                        ) : mediaType === 'application/pdf' ? (
+                          <div className="size-8 flex items-center justify-center bg-red-100 dark:bg-red-900/20 rounded text-red-600 dark:text-red-400 text-xs font-bold">
+                            📄
+                          </div>
+                        ) : (
+                          <div className="size-8 flex items-center justify-center bg-gray-100 dark:bg-gray-900/20 rounded text-gray-600 dark:text-gray-400 text-xs font-bold">
+                            📁
+                          </div>
+                        )}
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium truncate">{fileName}</p>
+                          <p className="text-xs text-muted-foreground">{mediaType}</p>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              }
+
               if (type === 'text') {
                 if (mode === 'view') {
                   return (
-                    <div key={key} className="flex flex-row gap-2 items-start">
-                      {message.role === 'user' && !isReadonly && (
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <Button
-                              data-testid="message-edit-button"
-                              variant="ghost"
-                              className="px-2 rounded-full opacity-0 h-fit text-muted-foreground group-hover/message:opacity-100"
-                              onClick={() => {
-                                setMode('edit');
-                              }}
-                            >
-                              <PencilEditIcon />
-                            </Button>
-                          </TooltipTrigger>
-                          <TooltipContent>Edit message</TooltipContent>
-                        </Tooltip>
-                      )}
-
+                    <div key={key} className="w-full">
                       <MessageContent
                         data-testid="message-content"
-                        className={cn('justify-start items-start text-left', {
-                          'bg-primary text-primary-foreground':
+                        className={cn({
+                          'justify-center items-center text-center bg-primary text-primary-foreground':
                             message.role === 'user',
-                          'bg-transparent': message.role === 'assistant',
+                          'justify-start items-start text-left bg-transparent': message.role === 'assistant',
                         })}
                       >
                         <Response>{sanitizeText(part.text)}</Response>
@@ -179,11 +275,11 @@ const PurePreviewMessage = ({
 
                 if (mode === 'edit') {
                   return (
-                    <div key={key} className="flex flex-row gap-2 items-start">
+                    <div key={key} className="w-full flex flex-row gap-2 items-start">
                       <div className="size-8" />
 
                       <MessageEditor
-                        key={message.id}
+                        key={`${stableId}-editor`}
                         message={message}
                         setMode={setMode}
                         setMessages={setMessages}
@@ -312,21 +408,39 @@ const PurePreviewMessage = ({
                   </Tool>
                 );
               }
-              });
+              
+              // Fallback for unknown part types
+              return null;
+              }).filter(Boolean)}
+                </div>
+              );
             })()}
 
             {!isReadonly && (
               <MessageActions
-                key={`action-${message.id}`}
+                key={`action-${stableId}`}
                 chatId={chatId}
                 message={message}
                 vote={vote}
                 isLoading={isLoading}
+                onEdit={() => setMode('edit')}
+                messages={messages}
+                setMessages={setMessages}
+                sendMessage={sendMessage}
+                regenerate={regenerate}
               />
             )}
+
           </div>
         </div>
       </motion.div>
+      
+      <FilePreviewPanel
+        key={`file-preview-${stableId}`}
+        isOpen={isPreviewOpen}
+        onClose={() => setIsPreviewOpen(false)}
+        file={previewFile}
+      />
     </AnimatePresence>
   );
 };
@@ -340,8 +454,12 @@ export const PreviewMessage = memo(
       return false;
     if (!equal(prevProps.message.parts, nextProps.message.parts)) return false;
     if (!equal(prevProps.vote, nextProps.vote)) return false;
+    if (prevProps.isReadonly !== nextProps.isReadonly) return false;
+    if (prevProps.chatId !== nextProps.chatId) return false;
+    if (prevProps.messages.length !== nextProps.messages.length) return false;
+    if (prevProps.sendMessage !== nextProps.sendMessage) return false;
 
-    return false;
+    return true; // Return true if props are equal (don't re-render)
   },
 );
 

@@ -3,7 +3,8 @@ import { useCopyToClipboard } from 'usehooks-ts';
 
 import type { Vote } from '@/lib/db/schema';
 
-import { CopyIcon, ThumbDownIcon, ThumbUpIcon } from './icons';
+import { CopyIcon, ThumbDownIcon, ThumbUpIcon, PencilEditIcon } from './icons';
+import { RotateCcw } from 'lucide-react';
 import { Actions, Action } from './elements/actions';
 import { memo } from 'react';
 import equal from 'fast-deep-equal';
@@ -15,20 +16,29 @@ export function PureMessageActions({
   message,
   vote,
   isLoading,
+  onEdit,
+  messages,
+  setMessages,
+  sendMessage,
+  regenerate,
 }: {
   chatId: string;
   message: ChatMessage;
   vote: Vote | undefined;
   isLoading: boolean;
+  onEdit?: () => void;
+  messages: ChatMessage[];
+  setMessages: (messages: ChatMessage[] | ((prev: ChatMessage[]) => ChatMessage[])) => void;
+  sendMessage: (message: { role: 'user'; parts: any[] }) => void;
+  regenerate: () => void;
 }) {
   const { mutate } = useSWRConfig();
   const [_, copyToClipboard] = useCopyToClipboard();
 
   if (isLoading) return null;
-  if (message.role === 'user') return null;
 
   return (
-    <Actions>
+    <Actions className={message.role === 'user' ? 'opacity-0 group-hover:opacity-100 transition-opacity duration-200' : ''}>
         <Action
           tooltip="Copy"
           onClick={async () => {
@@ -50,9 +60,50 @@ export function PureMessageActions({
           <CopyIcon />
         </Action>
 
-        <Action
-          tooltip="Upvote Response"
-          data-testid="message-upvote"
+        {message.role === 'assistant' && (
+          <Action
+            tooltip="Try Again"
+            onClick={async () => {
+              // Custom regeneration for this specific message - works like edit button
+              try {
+                // Import deleteTrailingMessages
+                const { deleteTrailingMessages } = await import('@/app/(chat)/actions');
+                
+                // Delete all messages from database after this message
+                await deleteTrailingMessages({
+                  id: message.id,
+                });
+
+                // Update local messages array to remove this assistant message and all after it
+                setMessages((messages) => {
+                  const index = messages.findIndex((m) => m.id === message.id);
+                  
+                  if (index !== -1) {
+                    // Remove this assistant message and all messages after it
+                    return [...messages.slice(0, index)];
+                  }
+                  
+                  return messages;
+                });
+
+                // Trigger regeneration to get a new response
+                regenerate();
+                
+                toast.success('Regenerating response...');
+              } catch (error) {
+                console.error('Error regenerating message:', error);
+                toast.error('Failed to regenerate response');
+              }
+            }}
+          >
+            <RotateCcw size={14} />
+          </Action>
+        )}
+
+        {message.role === 'assistant' && (
+          <Action
+            tooltip="Upvote Response"
+            data-testid="message-upvote"
           disabled={vote?.isUpvoted}
               onClick={async () => {
                 const upvote = fetch('/api/vote', {
@@ -96,10 +147,12 @@ export function PureMessageActions({
         >
           <ThumbUpIcon />
         </Action>
+        )}
 
-        <Action
-          tooltip="Downvote Response"
-          data-testid="message-downvote"
+        {message.role === 'assistant' && (
+          <Action
+            tooltip="Downvote Response"
+            data-testid="message-downvote"
           disabled={vote && !vote.isUpvoted}
               onClick={async () => {
                 const downvote = fetch('/api/vote', {
@@ -143,6 +196,16 @@ export function PureMessageActions({
         >
           <ThumbDownIcon />
         </Action>
+        )}
+
+        {message.role === 'user' && onEdit && (
+          <Action
+            tooltip="Edit Message"
+            onClick={onEdit}
+          >
+            <PencilEditIcon />
+          </Action>
+        )}
     </Actions>
   );
 }
@@ -152,7 +215,12 @@ export const MessageActions = memo(
   (prevProps, nextProps) => {
     if (!equal(prevProps.vote, nextProps.vote)) return false;
     if (prevProps.isLoading !== nextProps.isLoading) return false;
-
+    if (prevProps.message.id !== nextProps.message.id) return false;
+    if (prevProps.onEdit !== nextProps.onEdit) return false;
+    if (prevProps.messages.length !== nextProps.messages.length) return false;
+    if (prevProps.setMessages !== nextProps.setMessages) return false;
+    if (prevProps.sendMessage !== nextProps.sendMessage) return false;
+    if (prevProps.regenerate !== nextProps.regenerate) return false;
     return true;
   },
 );

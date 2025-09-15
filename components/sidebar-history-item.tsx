@@ -22,9 +22,13 @@ import {
   MoreHorizontalIcon,
   ShareIcon,
   TrashIcon,
+  PencilEditIcon,
 } from './icons';
-import { memo } from 'react';
+import { memo, useState, useEffect } from 'react';
 import { useChatVisibility } from '@/hooks/use-chat-visibility';
+import { Input } from './ui/input';
+import { updateChatTitle } from '@/app/(chat)/actions';
+import { toast } from 'sonner';
 
 const PureChatItem = ({
   chat,
@@ -42,11 +46,58 @@ const PureChatItem = ({
     initialVisibilityType: chat.visibility,
   });
 
+  const [isEditing, setIsEditing] = useState(false);
+  const [editTitle, setEditTitle] = useState(chat.title);
+
+  useEffect(() => {
+    setEditTitle(chat.title);
+  }, [chat.title]);
+
+  const handleSaveTitle = async () => {
+    if (editTitle.trim() && editTitle !== chat.title) {
+      try {
+        await updateChatTitle({ chatId: chat.id, title: editTitle.trim() });
+        toast.success('Chat title updated');
+        setIsEditing(false);
+        // Trigger a refresh of the chat list
+        window.dispatchEvent(new CustomEvent('chatTitleUpdated', { 
+          detail: { chatId: chat.id, newTitle: editTitle.trim() } 
+        }));
+      } catch (error) {
+        toast.error('Failed to update title');
+        setEditTitle(chat.title);
+      }
+    } else {
+      setEditTitle(chat.title);
+      setIsEditing(false);
+    }
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') {
+      handleSaveTitle();
+    } else if (e.key === 'Escape') {
+      setEditTitle(chat.title);
+      setIsEditing(false);
+    }
+  };
+
   return (
     <SidebarMenuItem>
       <SidebarMenuButton asChild isActive={isActive}>
         <Link href={`/chat/${chat.id}`} onClick={() => setOpenMobile(false)}>
-          <span>{chat.title}</span>
+          {isEditing ? (
+            <Input
+              value={editTitle}
+              onChange={(e) => setEditTitle(e.target.value)}
+              onBlur={handleSaveTitle}
+              onKeyDown={handleKeyDown}
+              className="h-6 text-sm bg-transparent border-none p-0 focus-visible:ring-0 focus-visible:ring-offset-0"
+              autoFocus
+            />
+          ) : (
+            <span>{chat.title}</span>
+          )}
         </Link>
       </SidebarMenuButton>
 
@@ -62,6 +113,14 @@ const PureChatItem = ({
         </DropdownMenuTrigger>
 
         <DropdownMenuContent side="bottom" align="end">
+          <DropdownMenuItem
+            className="cursor-pointer"
+            onClick={() => setIsEditing(true)}
+          >
+            <PencilEditIcon />
+            <span>Rename</span>
+          </DropdownMenuItem>
+
           <DropdownMenuSub>
             <DropdownMenuSubTrigger className="cursor-pointer">
               <ShareIcon />

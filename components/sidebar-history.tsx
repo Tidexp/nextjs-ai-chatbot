@@ -3,7 +3,7 @@
 import { isToday, isYesterday, subMonths, subWeeks } from 'date-fns';
 import { useParams, useRouter } from 'next/navigation';
 import type { User } from 'next-auth';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { toast } from 'sonner';
 import { motion } from 'framer-motion';
 import {
@@ -110,6 +110,18 @@ export function SidebarHistory({ user }: { user: User | undefined }) {
   const router = useRouter();
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
+
+  // Listen for title updates and refresh the chat list
+  useEffect(() => {
+    const handleTitleUpdate = () => {
+      mutate(); // Refresh the chat list
+    };
+
+    window.addEventListener('chatTitleUpdated', handleTitleUpdate);
+    return () => {
+      window.removeEventListener('chatTitleUpdated', handleTitleUpdate);
+    };
+  }, [mutate]);
 
   const hasReachedEnd = paginatedChatHistories
     ? paginatedChatHistories.some((page) => page.hasMore === false)

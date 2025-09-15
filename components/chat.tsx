@@ -2,7 +2,7 @@
 
 import { DefaultChatTransport } from 'ai';
 import { useChat } from '@ai-sdk/react';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import useSWR, { useSWRConfig, unstable_serialize } from 'swr';
 import { ChatHeader } from '@/components/chat-header';
 import type { Vote } from '@/lib/db/schema';
@@ -30,6 +30,7 @@ export function Chat({
   isReadonly,
   session,
   autoResume,
+  initialTitle,
 }: {
   id: string;
   initialMessages: ChatMessage[];
@@ -38,6 +39,7 @@ export function Chat({
   isReadonly: boolean;
   session: Session;
   autoResume: boolean;
+  initialTitle?: string;
 }) {
   const { visibilityType } = useChatVisibility({
     chatId: id,
@@ -55,6 +57,20 @@ export function Chat({
   const [hasAppendedQuery, setHasAppendedQuery] = useState(false);
 
   let streamStarted = false;
+
+  // Utility function to deduplicate messages
+  const deduplicateMessages = useCallback((messages: ChatMessage[]): ChatMessage[] => {
+    const seen = new Set<string>();
+    const deduplicated = messages.filter(msg => {
+      if (!msg.id || seen.has(msg.id)) {
+        return false;
+      }
+      seen.add(msg.id);
+      return true;
+    });
+    
+    return deduplicated;
+  }, []);
 
   const {
     messages,
@@ -165,16 +181,17 @@ export function Chat({
             { ...last, parts: [...last.parts, uiTextPart] },
           ];
         }
-        return [
-          ...prev,
-          {
-            id: generateUUID(),
-            role: 'assistant',
-            parts: [uiTextPart],
-            createdAt: new Date().toISOString(),
-            attachments: [],
-          },
-        ];
+        
+        // Create new assistant message
+        const newAssistantMessage = {
+          id: generateUUID(),
+          role: 'assistant' as const,
+          parts: [uiTextPart],
+          createdAt: new Date().toISOString(),
+          attachments: [],
+        };
+        
+        return [...prev, newAssistantMessage];
       });
     },    
     onFinish: ({ message }) => {
@@ -193,6 +210,11 @@ export function Chat({
           parts,
         } as typeof message;
 
+        // Check for duplicates before adding
+        const existingMessageIndex = prev.findIndex(m => m.id === normalized.id);
+        if (existingMessageIndex !== -1) {
+          return prev;
+        }
         return [...prev, normalized];
       });
       mutate(unstable_serialize(getChatHistoryPaginationKey));
@@ -220,18 +242,7 @@ export function Chat({
     }
   }, [query, sendMessage, hasAppendedQuery, id]);
 
-  // Debug status changes
-  useEffect(() => {
-    console.log('[Chat] Status changed:', status);
-  }, [status]);
 
-  // Debug messages changes
-  useEffect(() => {
-    console.log('[Chat] Messages updated:', {
-      count: messages.length,
-      lastMessage: messages[messages.length - 1],
-    });
-  }, [messages]);
 
   const hasAssistantMessage = messages.some((m) => m.role === 'assistant');
   const { data: votes } = useSWR<Vote[]>(
@@ -245,6 +256,24 @@ export function Chat({
 
   useAutoResume({ autoResume, initialMessages, resumeStream, setMessages });
 
+  // Clean up duplicates when messages change (but avoid infinite loops)
+  const [lastMessageCount, setLastMessageCount] = useState(messages.length);
+  useEffect(() => {
+    if (messages.length !== lastMessageCount) {
+      setLastMessageCount(messages.length);
+      
+      // Check for duplicates and clean them up
+      const duplicates = messages.filter((msg, index) => 
+        messages.findIndex(m => m.id === msg.id) !== index
+      );
+      
+      if (duplicates.length > 0) {
+        const deduplicated = deduplicateMessages(messages);
+        setMessages(deduplicated);
+      }
+    }
+  }, [messages.length, lastMessageCount, messages, setMessages, deduplicateMessages]);
+
   return (
     <>
       <div className="flex flex-col min-w-0 h-dvh bg-background">
@@ -254,6 +283,7 @@ export function Chat({
           selectedVisibilityType={initialVisibilityType}
           isReadonly={isReadonly}
           session={session}
+          title={initialTitle}
         />
 
         <Messages
@@ -265,6 +295,7 @@ export function Chat({
           regenerate={regenerate}
           isReadonly={isReadonly}
           isArtifactVisible={isArtifactVisible}
+          sendMessage={sendMessage}
         />
 
         <div className="sticky bottom-0 flex gap-2 px-4 pb-4 mx-auto w-full bg-background md:pb-6 md:max-w-3xl z-[1] border-t-0">

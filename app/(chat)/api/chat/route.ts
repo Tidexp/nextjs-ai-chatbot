@@ -16,6 +16,7 @@ import {
   getMessagesByChatId,
   saveChat,
   saveMessages,
+  updateChatTitleById,
 } from '@/lib/db/queries';
 import { convertToUIMessages, generateUUID } from '@/lib/utils';
 import { myProvider, type GeminiModelId } from '@/lib/ai/providers';
@@ -200,6 +201,7 @@ export async function POST(request: Request) {
     console.log(`[POST] Last user message:`, JSON.stringify(lastUserMessage, null, 2));
 
     const chat = await getChatById({ id: chatId });
+    let isNewChat = false;
 
     if (!chat) {
         console.log(`[POST] No chat found, creating new chat with ID: ${chatId}`);
@@ -209,6 +211,7 @@ export async function POST(request: Request) {
             title: 'New Chat',
             visibility: 'private' as VisibilityType,
         });
+        isNewChat = true;
     } else if (chat) {
         if (chat.userId !== session.user.id) {
             console.warn(`[POST] Chat userId does not match session userId.`);
@@ -324,6 +327,25 @@ export async function POST(request: Request) {
             chatId,
           })),
         });
+
+        // Generate title for new chats after first user message (async, non-blocking)
+        if (isNewChat && lastUserMessage) {
+          // Don't await this - let it run in the background
+          (async () => {
+            try {
+              const { generateTitleFromUserMessage } = await import('@/app/(chat)/actions');
+              const generatedTitle = await generateTitleFromUserMessage({
+                message: lastUserMessage as any,
+              });
+              if (generatedTitle && generatedTitle.trim() && generatedTitle !== 'New Chat') {
+                await updateChatTitleById({ chatId, title: generatedTitle });
+                console.log(`[POST] Generated title for new chat: ${generatedTitle}`);
+              }
+            } catch (error) {
+              console.warn('[POST] Failed to generate title:', error);
+            }
+          })();
+        }
       },
       onError: (err) => {
         console.error("[POST] UIMessageStream error:", err);
@@ -551,6 +573,25 @@ export async function POST(request: Request) {
           },
         ],
       });
+
+      // Generate title for new chats after first user message (async, non-blocking)
+      if (isNewChat && lastUserMessage) {
+        // Don't await this - let it run in the background
+        (async () => {
+          try {
+            const { generateTitleFromUserMessage } = await import('@/app/(chat)/actions');
+            const generatedTitle = await generateTitleFromUserMessage({
+              message: lastUserMessage as any,
+            });
+            if (generatedTitle && generatedTitle.trim() && generatedTitle !== 'New Chat') {
+              await updateChatTitleById({ chatId, title: generatedTitle });
+              console.log(`[POST] Generated title for new chat: ${generatedTitle}`);
+            }
+          } catch (error) {
+            console.warn('[POST] Failed to generate title:', error);
+          }
+        })();
+      }
 
       return Response.json({
         type: 'message',

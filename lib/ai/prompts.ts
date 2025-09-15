@@ -31,8 +31,30 @@ This is a guide for using artifacts tools: \`createDocument\` and \`updateDocume
 Do not update document right after creating it. Wait for user feedback or request to update it.
 `;
 
-export const regularPrompt =
-  'You are a friendly assistant! Keep your responses concise and helpful.';
+export const regularPrompt = `You are a friendly assistant! Keep your responses concise and helpful.
+
+When writing code, always format it using proper markdown code blocks with the appropriate language identifier. For example:
+
+\`\`\`python
+def hello():
+    print("Hello, world!")
+\`\`\`
+
+\`\`\`javascript
+function hello() {
+    console.log("Hello, world!");
+}
+\`\`\`
+
+\`\`\`cpp
+#include <iostream>
+int main() {
+    std::cout << "Hello, world!" << std::endl;
+    return 0;
+}
+\`\`\`
+
+This ensures the code is properly formatted with syntax highlighting and copy buttons for the user.`;
 
 export const systemPrompt = ({
   selectedChatModel,

@@ -3,16 +3,19 @@
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useWindowSize } from 'usehooks-ts';
+import { memo, useState, useEffect } from 'react';
 
 import { ModelSelector } from '@/components/model-selector';
 import { SidebarToggle } from '@/components/sidebar-toggle';
 import { Button } from '@/components/ui/button';
-import { PlusIcon, VercelIcon } from './icons';
+import { Input } from '@/components/ui/input';
+import { PlusIcon, VercelIcon, PencilEditIcon } from './icons';
 import { useSidebar } from './ui/sidebar';
-import { memo } from 'react';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
 import { type VisibilityType, VisibilitySelector } from './visibility-selector';
 import type { Session } from 'next-auth';
+import { updateChatTitle } from '@/app/(chat)/actions';
+import { toast } from 'sonner';
 
 function PureChatHeader({
   chatId,
@@ -20,21 +23,89 @@ function PureChatHeader({
   selectedVisibilityType,
   isReadonly,
   session,
+  title,
 }: {
   chatId: string;
   selectedModelId: string;
   selectedVisibilityType: VisibilityType;
   isReadonly: boolean;
   session: Session;
+  title?: string;
 }) {
   const router = useRouter();
   const { open } = useSidebar();
 
   const { width: windowWidth } = useWindowSize();
 
+  const [isEditing, setIsEditing] = useState(false);
+  const [editTitle, setEditTitle] = useState(title || '');
+
+  // Update local title when prop changes
+  useEffect(() => {
+    setEditTitle(title || '');
+  }, [title]);
+
+  const handleSaveTitle = async () => {
+    if (editTitle.trim() && editTitle !== title) {
+      try {
+        await updateChatTitle({ chatId, title: editTitle.trim() });
+        toast.success('Chat title updated');
+        setIsEditing(false);
+        // Trigger a refresh of the chat list
+        window.dispatchEvent(new CustomEvent('chatTitleUpdated', { 
+          detail: { chatId, newTitle: editTitle.trim() } 
+        }));
+      } catch (error) {
+        toast.error('Failed to update title');
+        setEditTitle(title || '');
+      }
+    } else {
+      setEditTitle(title || '');
+      setIsEditing(false);
+    }
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') {
+      handleSaveTitle();
+    } else if (e.key === 'Escape') {
+      setEditTitle(title || '');
+      setIsEditing(false);
+    }
+  };
+
   return (
     <header className="flex sticky top-0 bg-background py-1.5 items-center px-2 md:px-2 gap-2">
       <SidebarToggle />
+
+      {title && (
+        <div className="flex-1 min-w-0 mx-2">
+          {isEditing ? (
+            <Input
+              value={editTitle}
+              onChange={(e) => setEditTitle(e.target.value)}
+              onBlur={handleSaveTitle}
+              onKeyDown={handleKeyDown}
+              className="h-8 text-sm bg-transparent border-none p-0 focus-visible:ring-0 focus-visible:ring-offset-0"
+              autoFocus
+            />
+          ) : (
+            <div className="flex items-center gap-2 group">
+              <h1 className="text-lg font-semibold truncate">{title}</h1>
+              {!isReadonly && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="size-6 p-0 opacity-0 group-hover:opacity-100 transition-opacity"
+                  onClick={() => setIsEditing(true)}
+                >
+                  <PencilEditIcon size={14} />
+                </Button>
+              )}
+            </div>
+          )}
+        </div>
+      )}
 
       {(!open || windowWidth < 768) && (
         <Tooltip>
@@ -88,5 +159,5 @@ function PureChatHeader({
 }
 
 export const ChatHeader = memo(PureChatHeader, (prevProps, nextProps) => {
-  return prevProps.selectedModelId === nextProps.selectedModelId;
+  return prevProps.selectedModelId === nextProps.selectedModelId && prevProps.title === nextProps.title;
 });
