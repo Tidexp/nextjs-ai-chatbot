@@ -25,7 +25,7 @@ const getActionText = (
 
 interface DocumentToolResultProps {
   type: 'create' | 'update' | 'request-suggestions';
-  result: { id: string; title: string; kind: ArtifactKind };
+  result: { id: string; title: string; kind?: ArtifactKind };
   isReadonly: boolean;
 }
 
@@ -59,7 +59,7 @@ function PureDocumentToolResult({
 
         setArtifact({
           documentId: result.id,
-          kind: result.kind,
+          kind: result.kind ?? 'text',
           content: '',
           title: result.title,
           isVisible: true,

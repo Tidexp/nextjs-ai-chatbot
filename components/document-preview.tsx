@@ -89,11 +89,11 @@ export function DocumentPreview({
     : artifact.status === 'streaming'
       ? {
           title: artifact.title,
-          kind: artifact.kind,
           content: artifact.content,
           id: artifact.documentId,
           createdAt: new Date(),
           userId: 'noop',
+          text: 'text',
         }
       : null;
 
@@ -108,10 +108,10 @@ export function DocumentPreview({
       />
       <DocumentHeader
         title={document.title}
-        kind={document.kind}
+        kind={artifact.kind}
         isStreaming={artifact.status === 'streaming'}
       />
-      <DocumentContent document={document} />
+      <DocumentContent document={document} kind={artifact.kind} />
     </div>
   );
 }
@@ -234,14 +234,14 @@ const DocumentHeader = memo(PureDocumentHeader, (prevProps, nextProps) => {
   return true;
 });
 
-const DocumentContent = ({ document }: { document: Document }) => {
+const DocumentContent = ({ document, kind }: { document: Document; kind: ArtifactKind }) => {
   const { artifact } = useArtifact();
 
   const containerClassName = cn(
     'h-[257px] overflow-y-scroll border rounded-b-2xl dark:bg-muted border-t-0 dark:border-zinc-700',
     {
-      'p-4 sm:px-14 sm:py-16': document.kind === 'text',
-      'p-0': document.kind === 'code',
+      'p-4 sm:px-14 sm:py-16': kind === 'text',
+      'p-0': kind === 'code',
     },
   );
 
@@ -256,21 +256,21 @@ const DocumentContent = ({ document }: { document: Document }) => {
 
   return (
     <div className={containerClassName}>
-      {document.kind === 'text' ? (
+      {kind === 'text' ? (
         <Editor {...commonProps} onSaveContent={() => {}} />
-      ) : document.kind === 'code' ? (
+      ) : kind === 'code' ? (
         <div className="flex flex-1 relative w-full">
           <div className="absolute inset-0">
             <CodeEditor {...commonProps} onSaveContent={() => {}} />
           </div>
         </div>
-      ) : document.kind === 'sheet' ? (
+      ) : kind === 'sheet' ? (
         <div className="flex flex-1 relative size-full p-4">
           <div className="absolute inset-0">
             <SpreadsheetEditor {...commonProps} />
           </div>
         </div>
-      ) : document.kind === 'image' ? (
+      ) : kind === 'image' ? (
         <ImageEditor
           title={document.title}
           content={document.content ?? ''}

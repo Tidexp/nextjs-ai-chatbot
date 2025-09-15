@@ -62,10 +62,10 @@ async function testChatCreation() {
   } catch (error) {
     console.error('❌ Chat creation test failed:', error);
     console.log('\nError details:', {
-      message: error?.message,
-      code: error?.code,
-      detail: error?.detail,
-      constraint: error?.constraint
+      message: (error as any)?.message,
+      code: (error as any)?.code,
+      detail: (error as any)?.detail,
+      constraint: (error as any)?.constraint
     });
   } finally {
     process.exit(0);

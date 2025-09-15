@@ -77,7 +77,6 @@ export async function POST(request: Request) {
     id,
     content,
     title,
-    kind,
     userId: session.user.id,
   });
 

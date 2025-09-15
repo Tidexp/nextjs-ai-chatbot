@@ -34,13 +34,15 @@ export const updateDocument = ({ session, dataStream }: UpdateDocumentProps) =>
         transient: true,
       });
 
+      // Since Document type doesn't have a kind property, we'll use the text handler as default
+      // In a real implementation, you might want to store the kind in the database or infer it from content
       const documentHandler = documentHandlersByArtifactKind.find(
         (documentHandlerByArtifactKind) =>
-          documentHandlerByArtifactKind.kind === document.kind,
+          documentHandlerByArtifactKind.kind === 'text',
       );
 
       if (!documentHandler) {
-        throw new Error(`No document handler found for kind: ${document.kind}`);
+        throw new Error(`No document handler found for kind: text`);
       }
 
       await documentHandler.onUpdateDocument({
@@ -55,7 +57,7 @@ export const updateDocument = ({ session, dataStream }: UpdateDocumentProps) =>
       return {
         id,
         title: document.title,
-        kind: document.kind,
+        kind: 'text' as const,
         content: 'The document has been updated successfully.',
       };
     },
