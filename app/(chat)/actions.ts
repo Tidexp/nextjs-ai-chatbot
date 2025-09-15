@@ -22,33 +22,45 @@ export async function generateTitleFromUserMessage({
 }: {
   message: UIMessage;
 }) {
+  console.log('[generateTitleFromUserMessage] Received message:', JSON.stringify(message, null, 2));
+  
   // Extract just the text content from the message
   const textContent = (message as any).parts?.find((part: any) => part.type === 'text')?.text || 
                      (message as any).content?.find((part: any) => part.type === 'text')?.text || 
                      '';
 
+  console.log('[generateTitleFromUserMessage] Extracted text content:', textContent);
+
   if (!textContent.trim()) {
+    console.log('[generateTitleFromUserMessage] No text content found, returning "New Chat"');
     return 'New Chat';
   }
 
-  const { text: title } = await generateText({
-    model: myProvider.languageModel('gemini-2.5-flash'),
-    system: `You are a title generator. Create a concise, descriptive title for a chat conversation based on the user's first message.
+  // Use a simple, fast approach for title generation
+  try {
+    const { text: title } = await generateText({
+      model: myProvider.languageModel('gemini-2.5-flash-lite'), // Use faster model
+      system: `Summarize the following message into a short, descriptive chat title (max 25 characters). Use title case, no quotes or special characters.`,
+      prompt: textContent,
+      maxTokens: 10, // Limit response length for speed
+      temperature: 0.3, // Lower temperature for more consistent results
+    } as any); // Type assertion to bypass strict typing
 
-Rules:
-- Maximum 50 characters
-- Be specific and descriptive
-- Use title case
-- No quotes, colons, or special characters
-- Focus on the main topic or request
-- Examples:
-  - "Write code to demonstrate Dijkstra's algorithm" → "Dijkstra's Algorithm Code"
-  - "How do I create a React component?" → "React Component Help"
-  - "Explain quantum computing basics" → "Quantum Computing Basics"`,
-    prompt: textContent,
-  });
-
-  return title.trim();
+    const trimmedTitle = title.trim();
+    
+    // Fallback: if title is still too long, truncate it
+    if (trimmedTitle.length > 25) {
+      return trimmedTitle.substring(0, 22) + '...';
+    }
+    
+    return trimmedTitle || 'New Chat';
+  } catch (error) {
+    console.warn('[generateTitleFromUserMessage] Error generating title:', error);
+    // Fallback to a simple truncation if AI fails
+    return textContent.length > 25 
+      ? textContent.substring(0, 22) + '...' 
+      : textContent;
+  }
 }
 
 export async function deleteTrailingMessages({ id }: { id: string }) {

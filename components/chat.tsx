@@ -72,6 +72,14 @@ export function Chat({
     return deduplicated;
   }, []);
 
+  console.log('[Chat] ===== RENDERING CHAT COMPONENT =====');
+  console.log('[Chat] Initial messages:', initialMessages.length);
+  console.log('[Chat] Chat ID:', id);
+  console.log('[Chat] ====================================');
+  
+  // Test if console.log is working
+  console.log('TEST: Console logging is working');
+
   const {
     messages,
     setMessages,
@@ -83,144 +91,28 @@ export function Chat({
   } = useChat<ChatMessage>({
     id,
     messages: initialMessages,
-    experimental_throttle: 100,
+    experimental_throttle: 0, // Disable throttling for immediate streaming
     generateId: generateUUID,
-    transport: new DefaultChatTransport({
-      api: '/api/chat',
-      fetch: async (input, init) => {
-        const res = await fetchWithErrorHandlers(input, init);
-        console.log('[Chat] Response status:', res.status);
-        return res;
-      },
-      prepareSendMessagesRequest({ messages, body }) {
-        // Map helper
-        const mapOne = (m: any) => ({
-          role: m.role,
-          content: (m.parts ?? []).filter(
-            (p: any) => p.type !== 'text' || (p.text && p.text.trim().length)
-          ),
-        });
-
-        // Find latest user and the most recent assistant before it
-        const lastUserIndex = [...messages].map((m) => m.role).lastIndexOf('user');
-        const lastAssistantIndex = lastUserIndex > 0
-          ? [...messages]
-              .slice(0, lastUserIndex)
-              .map((m) => m.role)
-              .lastIndexOf('assistant')
-          : -1;
-
-        const selected: any[] = [];
-        if (lastAssistantIndex >= 0) selected.push(mapOne(messages[lastAssistantIndex]));
-        if (lastUserIndex >= 0) selected.push(mapOne(messages[lastUserIndex]));
-
-        // Fallback: if indices failed, at least send the last message
-        if (selected.length === 0 && messages.length > 0) {
-          selected.push(mapOne(messages[messages.length - 1]));
-        }
-
-        // System instruction to avoid re-answering earlier questions
-        const systemInstruction = {
-          role: 'system' as const,
-          content: [
-            {
-              type: 'text' as const,
-              text:
-                'Answer only the most recent user message. Use any previous turns only as background context if helpful. Do not restate or re-answer earlier user questions unless explicitly asked.',
-            },
-          ],
-        };
-
-        const finalMessages = [systemInstruction, ...selected];
-
-        const requestBody = {
-          chatId: id,
-          model: initialChatModel,
-          messages: finalMessages,
-          stream: true,
-          ...body,
-        };
-        console.log('[Chat] Sending request with chatId:', id);
-        console.log('[Chat] Sending request with stream:', requestBody.stream);
-        return { body: requestBody };
-      },
-    }),    
-    onData: (dataPart) => {
-      // Extract text robustly from various event shapes
-      let text = '';
-      try {
-        if (typeof dataPart === 'string') {
-          text = dataPart;
-        } else if (dataPart && typeof dataPart === 'object') {
-          const anyPart = dataPart as any;
-          text = anyPart.textDelta || anyPart.delta || anyPart.text || '';
-          if (!text && anyPart.type === 'message' && anyPart.message) {
-            const parts = anyPart.message.parts || anyPart.message.content || [];
-            text = (Array.isArray(parts) ? parts : [parts])
-              .filter((p: any) => p && p.type === 'text' && p.text)
-              .map((p: any) => p.text)
-              .join('');
-          }
-        }
-      } catch (_) {
-        // ignore
-      }
-
-      if (!text || !text.trim()) return;
-
-      // Debug: show incoming chunk size briefly
-      console.debug('[Chat] chunk:', text.slice(0, 80));
-
-      const uiTextPart = { type: 'text', text } as const;
-
-      setMessages((prev) => {
-        const last = prev[prev.length - 1];
-        if (last?.role === 'assistant') {
-          return [
-            ...prev.slice(0, -1),
-            { ...last, parts: [...last.parts, uiTextPart] },
-          ];
-        }
-        
-        // Create new assistant message
-        const newAssistantMessage = {
-          id: generateUUID(),
-          role: 'assistant' as const,
-          parts: [uiTextPart],
-          createdAt: new Date().toISOString(),
-          attachments: [],
-        };
-        
-        return [...prev, newAssistantMessage];
-      });
-    },    
+    onData: (data) => {
+      console.log('[Chat] ===== SSE DATA RECEIVED =====');
+      console.log('[Chat] Data:', data);
+      console.log('[Chat] Type:', typeof data);
+      console.log('[Chat] Keys:', Object.keys(data || {}));
+      console.log('[Chat] =============================');
+    },
+    onToolCall: (toolCall) => {
+      console.log('[Chat] ===== TOOL CALL RECEIVED =====');
+      console.log('[Chat] Tool Call:', toolCall);
+      console.log('[Chat] ==============================');
+    },
     onFinish: ({ message }) => {
-      // If we didn't stream any assistant chunks, append the final message
-      setMessages((prev) => {
-        const last = prev[prev.length - 1];
-        const hasStreamedAssistant = last?.role === 'assistant' && (last.parts?.length ?? 0) > 0;
-        if (hasStreamedAssistant) return prev;
-        if (!message) return prev;
-
-        // Normalize message to ensure 'parts' is present
-        const anyMsg: any = message as any;
-        const parts = anyMsg.parts || anyMsg.content || [];
-        const normalized = {
-          ...message,
-          parts,
-        } as typeof message;
-
-        // Check for duplicates before adding
-        const existingMessageIndex = prev.findIndex(m => m.id === normalized.id);
-        if (existingMessageIndex !== -1) {
-          return prev;
-        }
-        return [...prev, normalized];
-      });
+      console.log('[Chat] ===== SSE STREAM FINISHED =====');
+      console.log('[Chat] Message:', message);
+      console.log('[Chat] ===============================');
       mutate(unstable_serialize(getChatHistoryPaginationKey));
     },
     onError: (error) => {
-      console.error('[Chat] Error:', error);
+      console.error('[Chat] SSE Error:', error);
       if (error instanceof ChatSDKError) {
         toast({ type: 'error', description: error.message });
       } else {
@@ -232,9 +124,11 @@ export function Chat({
   // Send query from URL once
   useEffect(() => {
     if (query && !hasAppendedQuery) {
-      console.log('[Chat] Sending query from URL:', query);
+      console.log('[Chat] ===== SENDING MESSAGE FROM URL =====');
+      console.log('[Chat] Query:', query);
+      console.log('[Chat] =====================================');
       sendMessage({
-        role: 'user' as const,
+        role: 'user',
         parts: [{ type: 'text', text: query }],
       });
       setHasAppendedQuery(true);
@@ -242,7 +136,24 @@ export function Chat({
     }
   }, [query, sendMessage, hasAppendedQuery, id]);
 
+  // Debug sendMessage function
+  const debugSendMessage = useCallback((message: any) => {
+    console.log('[Chat] ===== SENDMESSAGE CALLED =====');
+    console.log('[Chat] Message:', message);
+    console.log('[Chat] Status before:', status);
+    console.log('[Chat] ===============================');
+    return sendMessage(message);
+  }, [sendMessage, status]);
 
+
+
+  // Debug status changes
+  useEffect(() => {
+    console.log('[Chat] ===== STATUS CHANGED =====');
+    console.log('[Chat] Status:', status);
+    console.log('[Chat] Messages count:', messages.length);
+    console.log('[Chat] ==========================');
+  }, [status, messages.length]);
 
   const hasAssistantMessage = messages.some((m) => m.role === 'assistant');
   const { data: votes } = useSWR<Vote[]>(

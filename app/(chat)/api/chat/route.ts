@@ -1,10 +1,5 @@
 import {
-  convertToModelMessages,
-  createUIMessageStream,
-  JsonToSseTransformStream,
   streamText,
-  StreamTextResult,
-  generateText,
 } from 'ai';
 import { auth, type UserType } from '@/app/(auth)/auth';
 import { systemPrompt } from '@/lib/ai/prompts';
@@ -33,6 +28,7 @@ import { chatModels } from '@/lib/ai/models';
 import type { VisibilityType } from '@/components/visibility-selector';
 
 export const maxDuration = 60;
+export const dynamic = 'force-dynamic';
 
 let globalStreamContext: ResumableStreamContext | null = null;
 
@@ -102,7 +98,13 @@ export async function POST(request: Request) {
     requestBody = postRequestBodySchema.parse(json);
     // Normalize messages: ensure content is always an array of parts
     requestBody.messages = requestBody.messages.map((msg) => {
-      if (!Array.isArray(msg.content)) {
+      // Handle both 'content' and 'parts' formats
+      if (msg.parts) {
+        return {
+          ...msg,
+          content: msg.parts,
+        };
+      } else if (!Array.isArray(msg.content)) {
         return {
           ...msg,
           content: [
@@ -132,7 +134,11 @@ export async function POST(request: Request) {
       stop,
     } = requestBody;
 
+    // Use default model if none provided
+    const model = requestedModel || 'gemini-2.5-flash';
+
     console.log(`[POST] Requested model: ${requestedModel}`);
+    console.log(`[POST] Using model: ${model}`);
     console.log(`[POST] Messages:`, JSON.stringify(messages, null, 2));
     console.log(`[POST] Temperature: ${temperature}`);
     console.log(`[POST] Max completion tokens: ${max_completion_tokens}`);
@@ -161,19 +167,19 @@ export async function POST(request: Request) {
     const userEntitlements = entitlementsByUserType[userType];
 
     // Validate the requested model exists
-    const validModel = chatModels.find(model => model.id === requestedModel);
+    const validModel = chatModels.find(m => m.id === model);
     if (!validModel) {
-      console.warn(`[POST] Requested model ${requestedModel} not found in chatModels.`);
+      console.warn(`[POST] Model ${model} not found in chatModels.`);
       return new ChatSDKError('bad_request:api').toResponse();
     }
 
     // Check if user can use the requested model
-    if (!userEntitlements.availableChatModelIds.includes(requestedModel)) {
-      console.warn(`[POST] User not entitled to model ${requestedModel}.`);
+    if (!userEntitlements.availableChatModelIds.includes(model)) {
+      console.warn(`[POST] User not entitled to model ${model}.`);
       return new ChatSDKError('forbidden:chat').toResponse();
     }
 
-    const selectedChatModel = requestedModel;
+    const selectedChatModel = model;
     console.log(`[POST] Selected chat model: ${selectedChatModel}`);
 
     const messageCount = await getMessageCountByUserId({
@@ -251,355 +257,164 @@ export async function POST(request: Request) {
       });
     }
 
+    // Title generation disabled - all chats will show as "New Chat"
+    // if (isNewChat && lastUserMessage) {
+    //   console.log(`[POST] Generating title from user message:`, JSON.stringify(lastUserMessage, null, 2));
+    //   
+    //   // Start title generation immediately, don't wait for AI response
+    //   (async () => {
+    //     try {
+    //       const { generateTitleFromUserMessage } = await import('@/app/(chat)/actions');
+    //       const generatedTitle = await generateTitleFromUserMessage({
+    //         message: lastUserMessage as any,
+    //       });
+    //       const userText = (lastUserMessage as any).parts?.find((p: any) => p.type === 'text')?.text || 'no text';
+    //       console.log(`[POST] Generated title: "${generatedTitle}" from user message: "${userText}"`);
+    //       
+    //       if (generatedTitle && generatedTitle.trim() && generatedTitle !== 'New Chat') {
+    //         await updateChatTitleById({ chatId, title: generatedTitle });
+    //         console.log(`[POST] Updated chat title to: ${generatedTitle}`);
+    //       }
+    //     } catch (error) {
+    //       console.warn('[POST] Failed to generate title:', error);
+    //     }
+    //   })(); // Run immediately, no delay
+    // }
+
     const streamId = generateUUID();
     await createStreamId({ streamId, chatId });
     console.log(`[POST] Created stream ID: ${streamId}`);
 
-    const streamResponse = createUIMessageStream({
-      execute: async ({ writer: dataStream }) => {
-        let started = false;
-        let currentId = generateUUID();
-
-        const streamMessages = allUIMessages
-            .filter(msg => msg.role !== 'system') // Lọc bỏ message hệ thống vì đã có thuộc tính 'system' riêng
+    // Use the custom provider directly for streaming
+    const result = await myProvider.languageModel(selectedChatModel as GeminiModelId).doStream({
+      prompt: allUIMessages
+        .filter(msg => msg.role !== 'system')
           .map(msg => {
             const parts = (msg as any).parts || [];
-            const processed = {
-              role: msg.role as 'user' | 'assistant', // Ép kiểu role cho tương thích
-              content: parts.length > 0 ? parts : [{ type: 'text', text: '' }], // Ensure we always have valid content
-            };
-            console.log(`[POST] Processed message for streamText:`, JSON.stringify(processed, null, 2));
-            return processed;
-          });
-        
-        console.log(`[POST] All processed messages for streamText:`, JSON.stringify(streamMessages, null, 2));
-        
-        // Use our custom provider directly for streaming
-        const result = await myProvider.languageModel(selectedChatModel as GeminiModelId).doStream({
-          prompt: streamMessages,
-          temperature: 1,
-          maxTokens: 1024,
-          topP: 1,
-        } as any);
+          return {
+            role: msg.role as 'user' | 'assistant',
+            content: parts.length > 0 ? parts : [{ type: 'text', text: '' }],
+          };
+        }),
+    });
 
-        // Process the stream from our custom provider
-        console.log('[POST] Starting to consume stream...');
-        const reader = result.stream.getReader();
-        try {
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            
-            const anyChunk: any = value as any;
-            const text = anyChunk.textDelta || anyChunk.delta || anyChunk.text || '';
-            
-            if (text) {
-              if (!started) {
-                started = true;
-                await dataStream.write({ type: 'text-start', id: currentId });
-              }
-
-              await dataStream.write({
-                type: 'text-delta',
-                id: currentId,
-                delta: text,
-              });
-            }
+    // Convert the stream to proper SSE format
+    const responseStream = new ReadableStream({
+      async start(controller) {
+        // Send initial SSE headers and message start
+        const sendSSE = (data: any) => {
+          const sseData = `data: ${JSON.stringify(data)}\n\n`;
+          try {
+            controller.enqueue(new TextEncoder().encode(sseData));
+          } catch (err) {
+            console.log('[POST] Failed to enqueue SSE data, controller closed');
+            return false;
           }
+          return true;
+        };
 
-            if (started) {
-              await dataStream.write({ type: 'text-end', id: currentId });
-            }
-        } finally {
-          reader.releaseLock();
-        }
-        console.log('[POST] Stream consumption completed');
-      },
-      generateId: generateUUID,
-      onFinish: async ({ messages }) => {
-        await saveMessages({
-          messages: messages.map((m) => ({
-            id: m.id,
-            role: m.role,
-            parts: (m as any).content || (m as any).parts || [{ type: "text", text: "" }],
-            createdAt: new Date(),
-            attachments: [],
-            chatId,
-          })),
-        });
-
-        // Generate title for new chats after first user message (async, non-blocking)
-        if (isNewChat && lastUserMessage) {
-          // Don't await this - let it run in the background
-          (async () => {
-            try {
-              const { generateTitleFromUserMessage } = await import('@/app/(chat)/actions');
-              const generatedTitle = await generateTitleFromUserMessage({
-                message: lastUserMessage as any,
-              });
-              if (generatedTitle && generatedTitle.trim() && generatedTitle !== 'New Chat') {
-                await updateChatTitleById({ chatId, title: generatedTitle });
-                console.log(`[POST] Generated title for new chat: ${generatedTitle}`);
+        try {
+          console.log('[POST] ===== SSE STREAM STARTED =====');
+          
+          let fullText = '';
+          let messageId = generateUUID();
+          let hasStarted = false;
+          
+          const reader = result.stream.getReader();
+          try {
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              
+              const chunk = value;
+              if (chunk.type === 'text-delta' && chunk.delta) {
+                console.log('[POST] Streaming chunk:', chunk.delta.slice(0, 50) + (chunk.delta.length > 50 ? '...' : ''));
+                fullText += chunk.delta;
+                
+                // Check if controller is still open
+                if (controller.desiredSize === null) {
+                  console.log('[POST] Controller closed, stopping stream');
+                  break;
+                }
+                
+                // Send text-start event first
+                if (!hasStarted) {
+                  hasStarted = true;
+                  if (!sendSSE({ type: 'text-start', id: messageId })) break;
+                }
+                
+                // Send text-delta event
+                if (!sendSSE({ type: 'text-delta', id: messageId, delta: chunk.delta })) break;
               }
-            } catch (error) {
-              console.warn('[POST] Failed to generate title:', error);
             }
-          })();
-        }
-      },
-      onError: (err) => {
-        console.error("[POST] UIMessageStream error:", err);
-        return "Oops, an error occurred!";
-      }      
-    });        
-
-    const streamContext = getStreamContext();
-    console.log(`[POST] Stream context:`, !!streamContext);
-
-    if (stream) {
-      // Always return basic SSE stream (disable resumable)
-      return new Response(streamResponse.pipeThrough(new JsonToSseTransformStream()), {
-        headers: {
-          "Content-Type": "text/event-stream",
-          "Cache-Control": "no-cache",
-          "Connection": "keep-alive",
-        },
-      });
-    } else {
-      // Non-streaming: prefer generateText; fallback to streaming on provider 503
-      // For multimodal messages, force streaming to avoid issues with generateText
-      const hasMultimodalContent = allUIMessages.some(msg => 
-        (msg as any).parts?.some((part: any) => 
-          part.type === 'image' || 
-          (part.type === 'file' && (part.mediaType === 'application/pdf' || part.mediaType === 'text/plain'))
-        )
-      );
-      
-      let fullText = '';
-      
-      if (hasMultimodalContent) {
-        console.log('[POST] Detected multimodal content, using streaming instead of generateText');
-        // Use our custom provider directly for multimodal processing
-        console.log('[POST] Using custom provider directly for multimodal processing');
-        
-        let result;
-        let currentModel = selectedChatModel;
-        
-        try {
-          result = await myProvider.languageModel(currentModel as GeminiModelId).doStream({
-            prompt: allUIMessages
-              .filter(msg => msg.role !== 'system')
-              .map(msg => {
-                const parts = (msg as any).parts || [];
-                return {
-                  role: msg.role as 'user' | 'assistant',
-                  content: parts,
-                };
-              }),
-            temperature: 1,
-            maxTokens: 1024,
-            topP: 1,
-          } as any);
-        } catch (error: any) {
-          // If the requested model is overloaded, show user-friendly message
-          if (error?.status === 503) {
-            console.log(`[POST] ${currentModel} overloaded, informing user`);
-            fullText = `⚠️ **Model Overload Notice**\n\nThe ${currentModel} model is currently experiencing high demand and is temporarily unavailable. This is a temporary issue on Google's side.\n\n**What you can do:**\n- Try again in a few minutes\n- Switch to a different model (like gemini-2.5-flash)\n- The image processing is working correctly - this is just a capacity issue\n\n*Error details: ${error?.message || 'Service temporarily unavailable'}*`;
-            return Response.json({
-              type: 'message',
-              message: {
-                id: generateUUID(),
-                role: 'assistant',
-                parts: [{ type: 'text', text: fullText }],
-                createdAt: new Date().toISOString(),
-                attachments: [],
-              },
-              parts: [{ type: 'text', text: fullText }],
-              text: fullText,
-            });
-          } else {
-            throw error;
+          } finally {
+            reader.releaseLock();
           }
-        }
-        
-        // Process the stream from our custom provider
-        const reader = result.stream.getReader();
-        try {
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            
-            const anyChunk: any = value as any;
-            const t = anyChunk.textDelta || anyChunk.delta || anyChunk.text || '';
-            if (t) fullText += t;
+          
+          // Send text-end event
+          if (hasStarted && controller.desiredSize !== null) {
+            sendSSE({ type: 'text-end', id: messageId });
           }
-        } finally {
-          reader.releaseLock();
-        }
-      } else {
-        // Use generateText for text-only messages
-        try {
-        const processedMessages = allUIMessages
-          .filter(msg => msg.role !== 'system') // Lọc bỏ message hệ thống vì đã có thuộc tính 'system' riêng
-          .map(msg => {
-            const parts = (msg as any).parts || [];
-            
-            // Convert parts to the format expected by the AI SDK
-            const content = parts.map((part: any) => {
-              if (part.type === 'text') {
-                return { type: 'text', text: part.text || '' };
-              } else if (part.type === 'image') {
-                return { 
-                  type: 'image', 
-                  image: part.image 
-                };
-              } else if (part.type === 'file' && (part.mediaType === 'application/pdf' || part.mediaType === 'text/plain')) {
-                return {
-                  type: 'file',
-                  file: part.file || part.url,
-                  mediaType: part.mediaType,
-                  name: part.name
-                };
-              }
-              // Skip unknown part types
-              return null;
-            }).filter((part: any) => part !== null);
-            
-            const processed = {
-              role: msg.role as 'user' | 'assistant',
-              content: content.length > 0 ? content : [{ type: 'text', text: '' }],
-            };
-            console.log(`[POST] Processed message for generateText:`, JSON.stringify(processed, null, 2));
-            return processed;
-          });
-        
-        console.log(`[POST] All processed messages for generateText:`, JSON.stringify(processedMessages, null, 2));
-        
-        const result = await generateText({
-          model: myProvider.languageModel(selectedChatModel as GeminiModelId),
-          system: systemPrompt({ selectedChatModel }),
-          messages: processedMessages,
-        });
-        fullText = result.text || '';
-      } catch (genErr: any) {
-          // Check if it's a model overload error
-          if (genErr?.status === 503) {
-            console.log(`[POST] ${selectedChatModel} overloaded in generateText, informing user`);
-            fullText = `⚠️ **Model Overload Notice**\n\nThe ${selectedChatModel} model is currently experiencing high demand and is temporarily unavailable. This is a temporary issue on Google's side.\n\n**What you can do:**\n- Try again in a few minutes\n- Switch to a different model (like gemini-2.5-flash)\n- The image processing is working correctly - this is just a capacity issue\n\n*Error details: ${genErr?.message || 'Service temporarily unavailable'}*`;
-            
-            // Save assistant message
-            const assistantId = generateUUID();
-            const assistantMessage: ChatMessage = {
-              id: assistantId,
-              role: 'assistant',
-              parts: [{ type: 'text', text: fullText }] as any,
+          
+          // Save the final message to database
+          if (fullText.trim()) {
+            const finalMessage = {
+              id: messageId,
+              role: 'assistant' as const,
+              parts: [{ type: 'text' as const, text: fullText }],
               createdAt: new Date().toISOString(),
               attachments: [],
-            } as any;
+            };
 
             await saveMessages({
-              messages: [
-                {
-                  id: assistantId,
-                  role: 'assistant',
-                  parts: assistantMessage.parts as any,
-                  createdAt: new Date(),
-                  attachments: [],
-                  chatId,
-                },
-              ],
-            });
-
-            return Response.json({
-              type: 'message',
-              message: assistantMessage,
-              parts: assistantMessage.parts,
-              text: fullText,
+              messages: [{
+                id: finalMessage.id,
+                role: finalMessage.role,
+                parts: finalMessage.parts,
+                createdAt: new Date(),
+                attachments: [],
+                chatId,
+              }],
             });
           }
           
-        console.warn('[POST] generateText failed, falling back to streamText:', genErr?.message || genErr);
-        // Fallback: stream and assemble
-          const fallbackMessages = allUIMessages
-            .filter(msg => msg.role !== 'system') // Lọc bỏ message hệ thống vì đã có thuộc tính 'system' riêng
-            .map(msg => {
-              const parts = (msg as any).parts || [];
-              const processed = {
-              role: msg.role as 'user' | 'assistant', // Ép kiểu role cho tương thích
-                content: parts.length > 0 ? parts : [{ type: 'text', text: '' }], // Ensure we always have valid content
-              };
-              console.log(`[POST] Processed message for streamText fallback:`, JSON.stringify(processed, null, 2));
-              return processed;
-            });
-          
-          console.log(`[POST] All processed messages for streamText fallback:`, JSON.stringify(fallbackMessages, null, 2));
-          
-          const result = await streamText({
-            model: myProvider.languageModel(selectedChatModel as GeminiModelId),
-            system: systemPrompt({ selectedChatModel }),
-            messages: fallbackMessages,
-        });
-        for await (const chunk of result.textStream) {
-          const anyChunk: any = chunk as any;
-          const t = anyChunk.textDelta || anyChunk.delta || anyChunk.text || '';
-          if (t) fullText += t;
+          // Send completion signal
+          if (controller.desiredSize !== null) {
+            sendSSE('[DONE]');
+            controller.close();
+          }
+        } catch (error) {
+          console.error('[POST] SSE Stream error:', error);
+          if (controller.desiredSize !== null) {
+            try {
+              const errorData = `data: ${JSON.stringify({ type: 'error', message: error instanceof Error ? error.message : 'Unknown error' })}\n\n`;
+              controller.enqueue(new TextEncoder().encode(errorData));
+              controller.close();
+            } catch (err) {
+              console.log('[POST] Failed to send error, controller closed');
+            }
           }
         }
-      }
+      },
+    });
 
-      if (!fullText || !fullText.trim()) {
-        fullText = 'Sorry, I could not generate a response. Please try again.';
-      }
+    console.log('[POST] Returning SSE streaming response with headers:', {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    });
 
-      // Save assistant message
-      const assistantId = generateUUID();
-      const assistantMessage: ChatMessage = {
-        id: assistantId,
-        role: 'assistant',
-        parts: [{ type: 'text', text: fullText }] as any,
-        createdAt: new Date().toISOString(),
-        attachments: [],
-      } as any;
-
-      await saveMessages({
-        messages: [
-          {
-            id: assistantId,
-            role: 'assistant',
-            parts: assistantMessage.parts as any,
-            createdAt: new Date(),
-            attachments: [],
-            chatId,
-          },
-        ],
-      });
-
-      // Generate title for new chats after first user message (async, non-blocking)
-      if (isNewChat && lastUserMessage) {
-        // Don't await this - let it run in the background
-        (async () => {
-          try {
-            const { generateTitleFromUserMessage } = await import('@/app/(chat)/actions');
-            const generatedTitle = await generateTitleFromUserMessage({
-              message: lastUserMessage as any,
-            });
-            if (generatedTitle && generatedTitle.trim() && generatedTitle !== 'New Chat') {
-              await updateChatTitleById({ chatId, title: generatedTitle });
-              console.log(`[POST] Generated title for new chat: ${generatedTitle}`);
-            }
-          } catch (error) {
-            console.warn('[POST] Failed to generate title:', error);
-          }
-        })();
-      }
-
-      return Response.json({
-        type: 'message',
-        message: assistantMessage,
-        parts: assistantMessage.parts,
-        text: fullText,
-      });
-    }
+    return new Response(responseStream, {
+      headers: {
+        'Content-Type': 'text/event-stream; charset=utf-8',
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no', // Disable nginx buffering
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Headers': 'Cache-Control',
+      },
+    });
   } catch (error) {
     if (error instanceof ChatSDKError) {
       console.error('[POST] ChatSDKError:', error);

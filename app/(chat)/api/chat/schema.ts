@@ -19,12 +19,18 @@ const messageSchema = z.object({
   content: z.union([
     z.string().min(1),          
     z.array(partSchema).min(1), 
-  ]),
-});
+  ]).optional(),
+  parts: z.array(partSchema).min(1).optional(),
+}).refine(
+  (data) => data.content || data.parts,
+  {
+    message: "Either 'content' or 'parts' must be provided",
+  }
+);
 
 export const postRequestBodySchema = z.object({
   chatId: z.string().optional(), // Add chatId to the schema
-  model: z.string().min(1), // ví dụ: "meta-llama/llama-guard-4-12b"
+  model: z.string().min(1).optional(), // Make model optional with default
   messages: z.array(messageSchema).min(1),
   temperature: z.number().min(0).max(2).default(1),
   max_completion_tokens: z.number().min(1).max(8192).default(1024),

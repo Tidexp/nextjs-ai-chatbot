@@ -239,6 +239,9 @@ async function streamGemini(model: string, options: any) {
         temperature: options.temperature ?? 1,
         maxOutputTokens: options.maxTokens ?? 8192,
         topP: options.topP ?? 1,
+        // Enable streaming optimizations
+        candidateCount: 1,
+        stopSequences: [],
       },
     };
 
@@ -286,21 +289,37 @@ async function streamGemini(model: string, options: any) {
             for await (const chunk of responseIterator) {
               const text = chunk.text;
               if (text) {
+                console.log(`[streamGemini] Streaming chunk:`, text.slice(0, 50) + (text.length > 50 ? '...' : ''));
+                
+                // Emit SSE-compatible text-delta event
                 controller.enqueue({
                   type: "text-delta",
                   delta: text,
                   textDelta: text,
                 });
+                
+                // Add small delay to ensure proper streaming
+                await new Promise(resolve => setTimeout(resolve, 10));
               }
             }
+            
+            // Emit finish event
             controller.enqueue({
               type: "finish",
               finishReason: "stop",
               usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
             });
+            
             controller.close();
           } catch (streamError) {
             console.error(`[streamGemini] Stream error:`, streamError);
+            
+            // Emit error event in SSE format
+            controller.enqueue({
+              type: "error",
+              error: streamError instanceof Error ? streamError.message : String(streamError),
+            });
+            
             controller.error(streamError instanceof Error ? streamError : new Error(String(streamError)));
           }
         },
