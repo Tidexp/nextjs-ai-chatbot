@@ -61,14 +61,27 @@ export function Chat({
   // Utility function to deduplicate messages
   const deduplicateMessages = useCallback((messages: ChatMessage[]): ChatMessage[] => {
     const seen = new Set<string>();
-    const deduplicated = messages.filter(msg => {
-      if (!msg.id || seen.has(msg.id)) {
-        return false;
-      }
-      seen.add(msg.id);
-      return true;
-    });
+    const deduplicated: ChatMessage[] = [];
     
+    for (const msg of messages) {
+      if (!msg.id || seen.has(msg.id)) {
+        console.log('[Chat] Skipping duplicate message:', msg.id);
+        continue;
+      }
+      
+      // Also check for content-based duplicates to handle cases where IDs might be different
+      const contentKey = `${msg.role}-${JSON.stringify(msg.parts)}`;
+      if (seen.has(contentKey)) {
+        console.log('[Chat] Skipping duplicate content:', contentKey);
+        continue;
+      }
+      
+      seen.add(msg.id);
+      seen.add(contentKey);
+      deduplicated.push(msg);
+    }
+    
+    console.log('[Chat] Deduplicated messages:', deduplicated.length, 'from', messages.length);
     return deduplicated;
   }, []);
 
@@ -92,13 +105,71 @@ export function Chat({
     id,
     messages: initialMessages,
     experimental_throttle: 0, // Disable throttling for immediate streaming
-    generateId: generateUUID,
+    generateId: () => generateUUID(), // Generate new IDs only for new messages
     onData: (data) => {
       console.log('[Chat] ===== SSE DATA RECEIVED =====');
       console.log('[Chat] Data:', data);
       console.log('[Chat] Type:', typeof data);
       console.log('[Chat] Keys:', Object.keys(data || {}));
+      console.log('[Chat] Raw data string:', JSON.stringify(data));
+      console.log('[Chat] Data type:', data?.type);
+      console.log('[Chat] Data text:', (data as any)?.text);
+      console.log('[Chat] Data delta:', (data as any)?.delta);
+      console.log('[Chat] Data id:', (data as any)?.id);
       console.log('[Chat] =============================');
+      
+      if (data && typeof data === 'object') {
+        const messageId = (data as any).id;
+        const type = (data as any).type;
+        
+        if (type === 'text-start' && messageId) {
+          // Create new assistant message with server-provided messageId
+          console.log('[Chat] Processing text-start:', { messageId });
+          setMessages((prev) => {
+            // Check if message already exists (avoid duplicates)
+            const existingMessage = prev.find(msg => msg.id === messageId);
+            if (existingMessage) {
+              return prev;
+            }
+            
+            return [...prev, { 
+              id: messageId, 
+              role: 'assistant', 
+              parts: [{ type: 'text', text: '' }],
+              createdAt: new Date().toISOString()
+            }];
+          });
+        }
+        
+        if (type === 'text-delta' && messageId) {
+          const delta = (data as any).delta;
+          if (delta) {
+            console.log('[Chat] Processing text-delta:', { messageId, delta: delta.slice(0, 50) + '...' });
+            setMessages((prev) => {
+              return prev.map(msg => {
+                if (msg.id === messageId && msg.role === 'assistant') {
+                  // Find existing text part and append delta
+                  const textPart = msg.parts?.find((p: any) => p.type === 'text');
+                  const currentText = textPart ? (textPart as any).text || '' : '';
+                  const newText = currentText + delta;
+                  
+                  return {
+                    ...msg,
+                    parts: [{ type: 'text', text: newText }]
+                  };
+                }
+                return msg;
+              });
+            });
+          }
+        }
+        
+        if (type === 'text-end' && messageId) {
+          console.log('[Chat] Processing text-end:', { messageId });
+          // Message is complete, no additional action needed
+          // The message already has all the accumulated text
+        }
+      }
     },
     onToolCall: (toolCall) => {
       console.log('[Chat] ===== TOOL CALL RECEIVED =====');
@@ -108,15 +179,28 @@ export function Chat({
     onFinish: ({ message }) => {
       console.log('[Chat] ===== SSE STREAM FINISHED =====');
       console.log('[Chat] Message:', message);
+      console.log('[Chat] Message parts:', message.parts);
+      console.log('[Chat] Message keys:', Object.keys(message));
+      console.log('[Chat] Message content (if exists):', (message as any).content);
       console.log('[Chat] ===============================');
       mutate(unstable_serialize(getChatHistoryPaginationKey));
     },
     onError: (error) => {
       console.error('[Chat] SSE Error:', error);
+      console.error('[Chat] Error details:', {
+        message: error?.message,
+        name: error?.name,
+        stack: error?.stack
+      });
+      
       if (error instanceof ChatSDKError) {
         toast({ type: 'error', description: error.message });
+      } else if (error?.message?.includes('Failed to fetch')) {
+        toast({ type: 'error', description: 'Connection failed. The AI service may be temporarily unavailable. Please try again.' });
+      } else if (error?.message?.includes('503')) {
+        toast({ type: 'error', description: 'AI service is overloaded. Please try again in a moment.' });
       } else {
-        toast({ type: 'error', description: 'An unexpected error occurred' });
+        toast({ type: 'error', description: `An error occurred: ${error?.message || 'Unknown error'}` });
       }
     },
   });
@@ -171,6 +255,7 @@ export function Chat({
   const [lastMessageCount, setLastMessageCount] = useState(messages.length);
   useEffect(() => {
     if (messages.length !== lastMessageCount) {
+      console.log('[Chat] Message count changed from', lastMessageCount, 'to', messages.length);
       setLastMessageCount(messages.length);
       
       // Check for duplicates and clean them up
@@ -179,6 +264,7 @@ export function Chat({
       );
       
       if (duplicates.length > 0) {
+        console.log('[Chat] Found', duplicates.length, 'duplicate messages, deduplicating...');
         const deduplicated = deduplicateMessages(messages);
         setMessages(deduplicated);
       }
@@ -227,14 +313,6 @@ export function Chat({
           )}
         </div>
 
-        {process.env.NODE_ENV === 'development' && (
-          <div className="fixed bottom-4 right-4 p-4 bg-black/80 text-white text-xs rounded max-w-sm">
-            <div>Status: {status}</div>
-            <div>Messages: {messages.length}</div>
-            <div>Chat ID: {id}</div>
-            <div>Model: {initialChatModel}</div>
-          </div>
-        )}
       </div>
 
       <Artifact

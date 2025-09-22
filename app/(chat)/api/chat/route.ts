@@ -7,6 +7,7 @@ import {
   createStreamId,
   deleteChatById,
   getChatById,
+  getChatsByUserId,
   getMessageCountByUserId,
   getMessagesByChatId,
   saveChat,
@@ -64,13 +65,19 @@ function convertSchemaMessagesToUIMessages(messages: PostRequestBody['messages']
           if (part.type === 'text') {
             return { type: 'text' as const, text: part.text };
           }
+          if (part.type === 'image') {
+            // Handle direct image parts
+            return { type: 'image' as const, image: part.image };
+          }
           if (part.type === 'file' && part.mediaType.startsWith('image/')) {
             // Convert valid image files to the 'image' part type
-            return { type: 'image' as const, image: part.url };
+            const fileUrl = part.url || part.file;
+            return { type: 'image' as const, image: fileUrl };
           }
           if (part.type === 'file' && (part.mediaType === 'application/pdf' || part.mediaType === 'text/plain')) {
             // Convert PDF and text files to the 'file' part type
-            return { type: 'file' as const, file: part.url, mediaType: part.mediaType, name: part.name };
+            const fileUrl = part.url || part.file;
+            return { type: 'file' as const, file: fileUrl, mediaType: part.mediaType, name: part.name };
           }
           // Any other part type (like non-image files) will be ignored
           return null;
@@ -81,7 +88,7 @@ function convertSchemaMessagesToUIMessages(messages: PostRequestBody['messages']
     }
 
     return {
-      id: generateUUID(),
+      id: msg.id || generateUUID(), // Preserve original ID if it exists, otherwise generate new one
       role: msg.role,
       parts, // Use the cleaned and validated parts array
       createdAt: new Date().toISOString(),
@@ -95,7 +102,18 @@ export async function POST(request: Request) {
   try {
     const json = await request.json();
     console.log("[POST] Raw request body:", JSON.stringify(json, null, 2));
+    
     requestBody = postRequestBodySchema.parse(json);
+    
+    // The AI SDK sends requests to /api/chat by default, not /api/chat/{id}
+    // We need to extract the chat ID from the request body or use a different approach
+    
+    // For now, let's check if there's a chatId in the request body
+    console.log("[POST] Request URL:", request.url);
+    console.log("[POST] Request body chatId:", requestBody.chatId);
+    
+    // If no chatId in body, we need to generate one or find another way
+    // The AI SDK's useChat hook should maintain the same chat ID across messages
     // Normalize messages: ensure content is always an array of parts
     requestBody.messages = requestBody.messages.map((msg) => {
       // Handle both 'content' and 'parts' formats
@@ -193,18 +211,48 @@ export async function POST(request: Request) {
       return new ChatSDKError('rate_limit:chat').toResponse();
     }
 
-    // Extract or generate chat ID
-    let chatId = requestBody.chatId || generateUUID();
+    // Extract or generate chat ID (handle both 'id' and 'chatId' fields from AI SDK)
+    let chatId = requestBody.chatId || requestBody.id;
+    
+    // If no chatId provided, try to find an existing chat based on the messages
+    if (!chatId && messages.length > 0) {
+      console.log(`[POST] No chatId provided, trying to find existing chat`);
+      
+      // If there are multiple messages, this might be a continuation of an existing chat
+      // The AI SDK sends all messages together, so we can use this to find the existing chat
+      if (messages.length > 1) {
+        // Get the first user message to identify the chat
+        const firstUserMessage = messages.find(msg => msg.role === 'user');
+        if (firstUserMessage) {
+          console.log(`[POST] Multiple messages detected, looking for existing chat`);
+          
+          // Try to find a chat that has this first message
+          // This is a simplified approach - in a real app you might want more sophisticated matching
+          const userChats = await getChatsByUserId({ 
+            id: session.user.id,
+            limit: 10,
+            startingAfter: null,
+            endingBefore: null
+          });
+          
+          // For now, let's use the most recent chat as a fallback
+          if (userChats.chats.length > 0) {
+            const mostRecentChat = userChats.chats[0]; // They're sorted by creation date desc
+            chatId = mostRecentChat.id;
+            console.log(`[POST] Found existing chat: ${chatId}`);
+          }
+        }
+      }
+    }
+    
+    // Generate a new chatId if none found
+    if (!chatId) {
+      chatId = generateUUID();
+      console.log(`[POST] Generating new chatId: ${chatId}`);
+    }
+    
     console.log(`[POST] Received chatId from request: ${requestBody.chatId}`);
     console.log(`[POST] Using chatId: ${chatId}`);
-
-    // Convert schema messages to UI messages
-    const uiMessages = convertSchemaMessagesToUIMessages(messages);
-    console.log(`[POST] UI Messages:`, JSON.stringify(uiMessages, null, 2));
-
-    // Get the last user message for title generation
-    const lastUserMessage = uiMessages.filter(msg => msg.role === 'user').pop() as ChatMessage | undefined;
-    console.log(`[POST] Last user message:`, JSON.stringify(lastUserMessage, null, 2));
 
     const chat = await getChatById({ id: chatId });
     let isNewChat = false;
@@ -225,22 +273,41 @@ export async function POST(request: Request) {
         }
     }
 
+    // Get existing messages from database
     const messagesFromDb = await getMessagesByChatId({ id: chatId });
     const existingUIMessages = convertToUIMessages(messagesFromDb);
     console.log(`[POST] Existing UI Messages from DB:`, JSON.stringify(existingUIMessages, null, 2));
 
-    // Merge existing messages with new messages, avoiding duplicates
-    const allUIMessages = [...existingUIMessages];
+    // Convert schema messages to UI messages
+    const uiMessages = convertSchemaMessagesToUIMessages(messages);
+    console.log(`[POST] UI Messages from request:`, JSON.stringify(uiMessages, null, 2));
 
-    // Only add new user messages that aren't already in the database
-    const newUserMessages = uiMessages.filter(msg => 
-      msg.role === 'user' && !existingUIMessages.some(existing => 
-        existing.role === 'user' && 
-        JSON.stringify((existing as any).content || (existing as any).parts || []) === JSON.stringify(msg.content)
-      )
-    ) as ChatMessage[];
+    // The AI SDK sends ALL messages in the conversation, but we only want to save the NEW user message
+    // Find the last user message that's not already in the database
+    const newUserMessages: ChatMessage[] = [];
+    for (const msg of uiMessages) {
+      if (msg.role === 'user') {
+        // First check if this message already exists by ID (more reliable)
+        const existsById = existingUIMessages.some(existing => 
+          existing.id === msg.id
+        );
+        
+        // If not found by ID, check by content (fallback for messages without IDs)
+        const existsByContent = !existsById && existingUIMessages.some(existing => 
+          existing.role === 'user' && 
+          JSON.stringify((existing as any).parts || []) === JSON.stringify(msg.parts || [])
+        );
+        
+        if (!existsById && !existsByContent) {
+          newUserMessages.push(msg);
+        }
+      }
+    }
 
-    allUIMessages.push(...newUserMessages);
+    console.log(`[POST] New user messages to save:`, JSON.stringify(newUserMessages, null, 2));
+
+    // For AI processing, use the messages from the request (which includes full conversation history)
+    const messagesForAI = uiMessages;
 
     // Save new user messages to database
     if (newUserMessages.length > 0) {
@@ -256,6 +323,9 @@ export async function POST(request: Request) {
         })),
       });
     }
+
+    // Get the last user message for title generation
+    const lastUserMessage = newUserMessages.length > 0 ? newUserMessages[newUserMessages.length - 1] : null;
 
     // Title generation disabled - all chats will show as "New Chat"
     // if (isNewChat && lastUserMessage) {
@@ -287,7 +357,7 @@ export async function POST(request: Request) {
 
     // Use the custom provider directly for streaming
     const result = await myProvider.languageModel(selectedChatModel as GeminiModelId).doStream({
-      prompt: allUIMessages
+      prompt: messagesForAI
         .filter(msg => msg.role !== 'system')
           .map(msg => {
             const parts = (msg as any).parts || [];
@@ -298,105 +368,103 @@ export async function POST(request: Request) {
         }),
     });
 
-    // Convert the stream to proper SSE format
-    const responseStream = new ReadableStream({
-      async start(controller) {
-        // Send initial SSE headers and message start
-        const sendSSE = (data: any) => {
-          const sseData = `data: ${JSON.stringify(data)}\n\n`;
-          try {
-            controller.enqueue(new TextEncoder().encode(sseData));
-          } catch (err) {
-            console.log('[POST] Failed to enqueue SSE data, controller closed');
-            return false;
-          }
-          return true;
-        };
+     // Convert the stream to proper SSE format that useChat expects
+     const responseStream = new ReadableStream({
+       async start(controller) {
+         try {
+           console.log('[POST] ===== SSE STREAM STARTED =====');
+           
+           let fullText = '';
+           let messageId = generateUUID();
+           let hasStarted = false;
+           
+           const reader = result.stream.getReader();
+           try {
+             while (true) {
+               const { done, value } = await reader.read();
+               if (done) break;
+               
+               const chunk = value;
+               if (chunk.type === 'text-delta' && chunk.delta) {
+                 console.log('[POST] Streaming chunk:', chunk.delta.slice(0, 50) + (chunk.delta.length > 50 ? '...' : ''));
+                 fullText += chunk.delta;
+                 
+                 // Check if controller is still open
+                 if (controller.desiredSize === null) {
+                   console.log('[POST] Controller closed, stopping stream');
+                   break;
+                 }
+                 
+                 // Send text-start event first (only once)
+                 if (!hasStarted) {
+                   hasStarted = true;
+                   const startEvent = `data: ${JSON.stringify({ type: 'text-start', id: messageId })}\n\n`;
+                   console.log('[POST] Sending start event:', startEvent);
+                   controller.enqueue(new TextEncoder().encode(startEvent));
+                 }
+                 
+                 // Send text-delta event in the format useChat expects
+                 const deltaEvent = `data: ${JSON.stringify({ 
+                   type: 'text-delta', 
+                   id: messageId, 
+                   delta: chunk.delta 
+                 })}\n\n`;
+                 console.log('[POST] Sending delta event:', deltaEvent.slice(0, 100) + '...');
+                 controller.enqueue(new TextEncoder().encode(deltaEvent));
+               }
+             }
+           } finally {
+             reader.releaseLock();
+           }
+           
+           // Send text-end event
+           if (hasStarted && controller.desiredSize !== null) {
+             const endEvent = `data: ${JSON.stringify({ type: 'text-end', id: messageId })}\n\n`;
+             console.log('[POST] Sending end event:', endEvent);
+             controller.enqueue(new TextEncoder().encode(endEvent));
+           }
+           
+           // Save the final message to database
+           if (fullText.trim()) {
+             const finalMessage = {
+               id: messageId,
+               role: 'assistant' as const,
+               parts: [{ type: 'text' as const, text: fullText }],
+               createdAt: new Date().toISOString(),
+               attachments: [],
+             };
 
-        try {
-          console.log('[POST] ===== SSE STREAM STARTED =====');
-          
-          let fullText = '';
-          let messageId = generateUUID();
-          let hasStarted = false;
-          
-          const reader = result.stream.getReader();
-          try {
-            while (true) {
-              const { done, value } = await reader.read();
-              if (done) break;
-              
-              const chunk = value;
-              if (chunk.type === 'text-delta' && chunk.delta) {
-                console.log('[POST] Streaming chunk:', chunk.delta.slice(0, 50) + (chunk.delta.length > 50 ? '...' : ''));
-                fullText += chunk.delta;
-                
-                // Check if controller is still open
-                if (controller.desiredSize === null) {
-                  console.log('[POST] Controller closed, stopping stream');
-                  break;
-                }
-                
-                // Send text-start event first
-                if (!hasStarted) {
-                  hasStarted = true;
-                  if (!sendSSE({ type: 'text-start', id: messageId })) break;
-                }
-                
-                // Send text-delta event
-                if (!sendSSE({ type: 'text-delta', id: messageId, delta: chunk.delta })) break;
-              }
-            }
-          } finally {
-            reader.releaseLock();
-          }
-          
-          // Send text-end event
-          if (hasStarted && controller.desiredSize !== null) {
-            sendSSE({ type: 'text-end', id: messageId });
-          }
-          
-          // Save the final message to database
-          if (fullText.trim()) {
-            const finalMessage = {
-              id: messageId,
-              role: 'assistant' as const,
-              parts: [{ type: 'text' as const, text: fullText }],
-              createdAt: new Date().toISOString(),
-              attachments: [],
-            };
-
-            await saveMessages({
-              messages: [{
-                id: finalMessage.id,
-                role: finalMessage.role,
-                parts: finalMessage.parts,
-                createdAt: new Date(),
-                attachments: [],
-                chatId,
-              }],
-            });
-          }
-          
-          // Send completion signal
-          if (controller.desiredSize !== null) {
-            sendSSE('[DONE]');
-            controller.close();
-          }
-        } catch (error) {
-          console.error('[POST] SSE Stream error:', error);
-          if (controller.desiredSize !== null) {
-            try {
-              const errorData = `data: ${JSON.stringify({ type: 'error', message: error instanceof Error ? error.message : 'Unknown error' })}\n\n`;
-              controller.enqueue(new TextEncoder().encode(errorData));
-              controller.close();
-            } catch (err) {
-              console.log('[POST] Failed to send error, controller closed');
-            }
-          }
-        }
-      },
-    });
+             await saveMessages({
+               messages: [{
+                 id: finalMessage.id,
+                 role: finalMessage.role,
+                 parts: finalMessage.parts,
+                 createdAt: new Date(),
+                 attachments: [],
+                 chatId,
+               }],
+             });
+           }
+           
+           // Close the controller after sending text-end
+           if (controller.desiredSize !== null) {
+             controller.close();
+           }
+           console.log('[POST] ===== SSE STREAM COMPLETED =====');
+         } catch (error) {
+           console.error('[POST] SSE Stream error:', error);
+           if (controller.desiredSize !== null) {
+             try {
+               const errorEvent = `data: ${JSON.stringify({ type: 'error', id: generateUUID(), error: error instanceof Error ? error.message : 'Unknown error' })}\n\n`;
+               controller.enqueue(new TextEncoder().encode(errorEvent));
+               controller.close();
+             } catch (err) {
+               console.log('[POST] Failed to send error, controller closed');
+             }
+           }
+         }
+       },
+     });
 
     console.log('[POST] Returning SSE streaming response with headers:', {
       'Content-Type': 'text/event-stream',
@@ -405,16 +473,16 @@ export async function POST(request: Request) {
       'X-Accel-Buffering': 'no',
     });
 
-    return new Response(responseStream, {
-      headers: {
-        'Content-Type': 'text/event-stream; charset=utf-8',
-        'Cache-Control': 'no-cache, no-store, must-revalidate',
-        'Connection': 'keep-alive',
-        'X-Accel-Buffering': 'no', // Disable nginx buffering
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Headers': 'Cache-Control',
-      },
-    });
+     return new Response(responseStream, {
+       headers: {
+         'Content-Type': 'text/event-stream',
+         'Cache-Control': 'no-cache',
+         'Connection': 'keep-alive',
+         'Access-Control-Allow-Origin': '*',
+         'Access-Control-Allow-Headers': 'Cache-Control',
+         'X-Accel-Buffering': 'no',
+       },
+     });
   } catch (error) {
     if (error instanceof ChatSDKError) {
       console.error('[POST] ChatSDKError:', error);

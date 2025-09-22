@@ -66,6 +66,8 @@ export function PureMessageActions({
             onClick={async () => {
               // Custom regeneration for this specific message - works like edit button
               try {
+                console.log('[MessageActions] Starting regeneration for message:', message.id);
+                
                 // Import deleteTrailingMessages
                 const { deleteTrailingMessages } = await import('@/app/(chat)/actions');
                 
@@ -74,24 +76,31 @@ export function PureMessageActions({
                   id: message.id,
                 });
 
-                // Update local messages array to remove this assistant message and all after it
+                // Update local messages array to remove this assistant message and all messages after it
                 setMessages((messages) => {
                   const index = messages.findIndex((m) => m.id === message.id);
                   
                   if (index !== -1) {
+                    console.log('[MessageActions] Removing assistant message and messages after index:', index);
                     // Remove this assistant message and all messages after it
-                    return [...messages.slice(0, index)];
+                    const updatedMessages = [...messages.slice(0, index)];
+                    console.log('[MessageActions] Updated messages count:', updatedMessages.length);
+                    return updatedMessages;
                   }
                   
+                  console.log('[MessageActions] Message not found in current messages array');
                   return messages;
                 });
 
-                // Trigger regeneration to get a new response
-                regenerate();
+                // Wait a bit for the state to update, then trigger regeneration
+                setTimeout(() => {
+                  console.log('[MessageActions] Calling regenerate...');
+                  regenerate();
+                }, 100);
                 
                 toast.success('Regenerating response...');
               } catch (error) {
-                console.error('Error regenerating message:', error);
+                console.error('[MessageActions] Error regenerating message:', error);
                 toast.error('Failed to regenerate response');
               }
             }}

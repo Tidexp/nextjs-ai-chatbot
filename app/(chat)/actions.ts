@@ -3,6 +3,7 @@
 import { generateText, type UIMessage } from 'ai';
 import { cookies } from 'next/headers';
 import {
+  deleteMessageById,
   deleteMessagesByChatIdAfterTimestamp,
   getMessageById,
   updateChatVisiblityById,
@@ -64,18 +65,31 @@ export async function generateTitleFromUserMessage({
 }
 
 export async function deleteTrailingMessages({ id }: { id: string }) {
-  const messages = await getMessageById({ id });
-  
-  if (!messages || messages.length === 0) {
-    throw new ChatSDKError('not_found:database', 'Message not found');
-  }
-  
-  const [message] = messages;
+  try {
+    const messages = await getMessageById({ id });
+    
+    if (!messages || messages.length === 0) {
+      console.warn(`[deleteTrailingMessages] Message with id ${id} not found in database. This might be a streaming message that hasn't been saved yet.`);
+      // Don't throw an error - just log a warning and return
+      // The frontend will handle the message deletion from the UI
+      return;
+    }
+    
+    const [message] = messages;
 
-  await deleteMessagesByChatIdAfterTimestamp({
-    chatId: message.chatId,
-    timestamp: message.createdAt,
-  });
+    // First delete the specific message being regenerated
+    await deleteMessageById({ id });
+    
+    // Then delete all messages after this one (if any)
+    await deleteMessagesByChatIdAfterTimestamp({
+      chatId: message.chatId,
+      timestamp: message.createdAt,
+    });
+  } catch (error) {
+    console.error(`[deleteTrailingMessages] Error deleting messages for id ${id}:`, error);
+    // Don't throw the error - let the frontend handle the UI update
+    // This prevents the entire regeneration from failing due to database issues
+  }
 }
 
 export async function updateChatVisibility({

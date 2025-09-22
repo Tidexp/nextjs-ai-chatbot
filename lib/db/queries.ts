@@ -434,6 +434,24 @@ export async function getMessageById({ id }: { id: string }) {
   }
 }
 
+export async function deleteMessageById({ id }: { id: string }) {
+  try {
+    const result = await db
+      .delete(message)
+      .where(eq(message.id, id))
+      .returning({ id: message.id });
+
+    console.log(`[deleteMessageById] Deleted message with id: ${id}`);
+    return result;
+  } catch (error) {
+    console.error(`[deleteMessageById] Error deleting message ${id}:`, error);
+    throw new ChatSDKError(
+      'bad_request:database',
+      'Failed to delete message by id',
+    );
+  }
+}
+
 export async function deleteMessagesByChatIdAfterTimestamp({
   chatId,
   timestamp,

@@ -88,9 +88,14 @@ export function MessageEditor({
               const index = messages.findIndex((m) => m.id === message.id);
 
               if (index !== -1) {
+                // Preserve all non-text parts (files, images, etc.) and update only the text content
+                const nonTextParts = (message.parts || []).filter((part: any) => part.type !== 'text');
                 const updatedMessage: ChatMessage = {
                   ...message,
-                  parts: [{ type: 'text', text: draftContent }],
+                  parts: [
+                    ...nonTextParts, // Keep all file/image parts
+                    { type: 'text', text: draftContent }, // Update text content
+                  ],
                 };
 
                 return [...messages.slice(0, index), updatedMessage];

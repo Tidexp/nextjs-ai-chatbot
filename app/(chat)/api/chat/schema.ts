@@ -7,12 +7,23 @@ const textPartSchema = z.object({
 
 const filePartSchema = z.object({
   type: z.enum(['file']),
-  mediaType: z.enum(['image/jpeg', 'image/png', 'application/pdf', 'text/plain']),
+  mediaType: z.enum(['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp', 'application/pdf', 'text/plain']),
   name: z.string().min(1).max(100),
-  url: z.string().url(),
+  url: z.string().url().optional(),
+  file: z.string().url().optional(),
+}).refine(
+  (data) => data.url || data.file,
+  {
+    message: "Either 'url' or 'file' must be provided",
+  }
+);
+
+const imagePartSchema = z.object({
+  type: z.enum(['image']),
+  image: z.string().url(),
 });
 
-const partSchema = z.union([textPartSchema, filePartSchema]);
+const partSchema = z.union([textPartSchema, filePartSchema, imagePartSchema]);
 
 const messageSchema = z.object({
   role: z.enum(["user", "system", "assistant"]),
@@ -21,6 +32,8 @@ const messageSchema = z.object({
     z.array(partSchema).min(1), 
   ]).optional(),
   parts: z.array(partSchema).min(1).optional(),
+  id: z.string().optional(), // Allow optional id field
+  metadata: z.any().optional(), // Allow optional metadata
 }).refine(
   (data) => data.content || data.parts,
   {
@@ -29,7 +42,8 @@ const messageSchema = z.object({
 );
 
 export const postRequestBodySchema = z.object({
-  chatId: z.string().optional(), // Add chatId to the schema
+  id: z.string().optional(), // Chat ID from AI SDK
+  chatId: z.string().optional(), // Alternative chatId field
   model: z.string().min(1).optional(), // Make model optional with default
   messages: z.array(messageSchema).min(1),
   temperature: z.number().min(0).max(2).default(1),
@@ -37,6 +51,7 @@ export const postRequestBodySchema = z.object({
   top_p: z.number().min(0).max(1).default(1),
   stream: z.boolean().default(true),
   stop: z.union([z.string(), z.array(z.string()), z.null()]).optional(),
+  trigger: z.string().optional(), // Trigger field from AI SDK
 });
 
 export type PostRequestBody = z.infer<typeof postRequestBodySchema>;
