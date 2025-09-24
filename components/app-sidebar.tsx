@@ -60,6 +60,15 @@ export function AppSidebar({ user }: { user: User | undefined }) {
       </SidebarHeader>
       <SidebarContent>
         <SidebarHistory user={user} />
+        <div className="px-2 py-2">
+          <Link
+            href="/analytics"
+            onClick={() => setOpenMobile(false)}
+            className="flex items-center gap-2 px-3 py-2 text-sm rounded-md hover:bg-muted transition-colors"
+          >
+            📊 Analytics
+          </Link>
+        </div>
       </SidebarContent>
       <SidebarFooter>{user && <SidebarUserNav user={user} />}</SidebarFooter>
     </Sidebar>

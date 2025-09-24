@@ -14,7 +14,7 @@ import {
   ToolInput,
   ToolOutput,
 } from './elements/tool';
-import { MessageActions } from './message-actions';
+import { EnhancedMessageActions } from './enhanced-message-actions';
 import { PreviewAttachment } from './preview-attachment';
 import { Weather } from './weather';
 import equal from 'fast-deep-equal';
@@ -417,7 +417,7 @@ const PurePreviewMessage = ({
             })()}
 
             {!isReadonly && (
-              <MessageActions
+              <EnhancedMessageActions
                 key={`action-${stableId}`}
                 chatId={chatId}
                 message={message}

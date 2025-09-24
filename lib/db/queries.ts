@@ -10,7 +10,9 @@ import {
   gte,
   inArray,
   lt,
+  or,
   type SQL,
+  type InferInsertModel,
 } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
@@ -23,10 +25,16 @@ import {
   type Suggestion,
   suggestion,
   message,
-  vote,
   type DBMessage,
+  vote,
   type Chat,
   stream,
+  responseFeedback,
+  userPreferences,
+  responseAnalytics,
+  type ResponseFeedback,
+  type UserPreferences,
+  type ResponseAnalytics,
 } from './schema';
 import type { ArtifactKind } from '@/components/artifact';
 import { generateUUID } from '../utils';
@@ -128,16 +136,46 @@ export async function saveChat({
 
 export async function deleteChatById({ id }: { id: string }) {
   try {
-    await db.delete(vote).where(eq(vote.chatId, id));
-    await db.delete(message).where(eq(message.chatId, id));
-    await db.delete(stream).where(eq(stream.chatId, id));
+    return await db.transaction(async (tx) => {
+      // collect message ids for this chat
+      const msgIds = await tx
+        .select({ id: message.id })
+        .from(message)
+        .where(eq(message.chatId, id));
+      const messageIds = msgIds.map((m) => m.id);
 
-    const [chatsDeleted] = await db
-      .delete(chat)
-      .where(eq(chat.id, id))
-      .returning();
-    return chatsDeleted;
+      // delete dependent rows first
+      if (messageIds.length > 0) {
+        try {
+          await tx
+            .delete(responseFeedback)
+            .where(inArray(responseFeedback.messageId, messageIds));
+        } catch (e) {
+          console.warn('[deleteChatById] responseFeedback delete skipped/cascades', e);
+        }
+        try {
+          await tx
+            .delete(responseAnalytics)
+            .where(inArray(responseAnalytics.messageId, messageIds));
+        } catch (e) {
+          console.warn('[deleteChatById] responseAnalytics delete skipped/cascades', e);
+        }
+        await tx.delete(vote).where(and(eq(vote.chatId, id), inArray(vote.messageId, messageIds)));
+      } else {
+        await tx.delete(vote).where(eq(vote.chatId, id));
+      }
+
+      await tx.delete(message).where(eq(message.chatId, id));
+      await tx.delete(stream).where(eq(stream.chatId, id));
+
+      const [chatsDeleted] = await tx
+        .delete(chat)
+        .where(eq(chat.id, id))
+        .returning();
+      return chatsDeleted;
+    });
   } catch (error) {
+    console.error('[deleteChatById] DB error for chat', id, error);
     throw new ChatSDKError(
       'bad_request:database',
       'Failed to delete chat by id',
@@ -233,7 +271,7 @@ export async function getChatById({ id }: { id: string }) {
 export async function saveMessages({
   messages,
 }: {
-  messages: Array<DBMessage>;
+  messages: Array<InferInsertModel<typeof message>>;
 }) {
   try {
     return await db.insert(message).values(messages);
@@ -242,18 +280,101 @@ export async function saveMessages({
   }
 }
 
+// Regenerate assistant message using versioning
+export async function regenerateAssistantMessage({
+  chatId,
+  previousMessageId,
+  newParts,
+  newAttachments,
+}: {
+  chatId: string;
+  previousMessageId: string;
+  newParts: any;
+  newAttachments: any;
+}) {
+  try {
+    // Fetch previous message
+    const [prev] = await db
+      .select()
+      .from(message)
+      .where(and(eq(message.id, previousMessageId), eq(message.chatId, chatId)))
+      .limit(1);
+
+    if (!prev) {
+      throw new ChatSDKError('not_found:database', 'Previous message not found');
+    }
+
+    // Mark previous inactive and set supersededAt
+    await db
+      .update(message)
+      .set({ isActive: false, supersededAt: new Date() })
+      .where(eq(message.id, previousMessageId));
+
+    // Determine parent and next version
+    const parentMessageId = prev.parentMessageId ?? prev.id;
+    const nextVersion = (prev.version ?? 1) + 1;
+
+    // Insert new message as next version
+    const newId = generateUUID();
+    await db.insert(message).values({
+      id: newId,
+      chatId,
+      role: 'assistant',
+      parts: newParts,
+      attachments: newAttachments ?? [],
+      createdAt: new Date(),
+      parentMessageId,
+      version: nextVersion,
+      isActive: true,
+      supersededAt: null,
+    } as any);
+
+    return { newMessageId: newId, parentMessageId, version: nextVersion };
+  } catch (error) {
+    throw new ChatSDKError('bad_request:database', 'Failed to regenerate assistant message');
+  }
+}
+
+export async function getActiveMessagesByChatId({ chatId }: { chatId: string }) {
+  try {
+    return await db
+      .select()
+      .from(message)
+      .where(and(eq(message.chatId, chatId), eq(message.isActive, true)))
+      .orderBy(asc(message.createdAt));
+  } catch (error) {
+    throw new ChatSDKError('bad_request:database', 'Failed to get active messages');
+  }
+}
+
+export async function getMessageVersionHistory({ parentMessageId }: { parentMessageId: string }) {
+  try {
+    return await db
+      .select()
+      .from(message)
+      .where(
+        or(
+          eq(message.parentMessageId, parentMessageId),
+          eq(message.id, parentMessageId),
+        ) as any,
+      )
+      .orderBy(asc(message.version));
+  } catch (error) {
+    throw new ChatSDKError('bad_request:database', 'Failed to get message version history');
+  }
+}
+
 export async function getMessagesByChatId({ id }: { id: string }) {
   try {
     return await db
       .select()
       .from(message)
-      .where(eq(message.chatId, id))
+      .where(and(eq(message.chatId, id), eq(message.isActive, true)))
       .orderBy(asc(message.createdAt));
   } catch (error) {
-    throw new ChatSDKError(
-      'bad_request:database',
-      'Failed to get messages by chat id',
-    );
+    console.error('[getMessagesByChatId] DB error for chat', id, error);
+    // Fail soft so UI still loads after chat rename
+    return [] as any;
   }
 }
 
@@ -266,25 +387,83 @@ export async function voteMessage({
   messageId: string;
   type: 'up' | 'down';
 }) {
-  try {
-    const [existingVote] = await db
-      .select()
-      .from(vote)
-      .where(and(eq(vote.messageId, messageId)));
+  // Retry mechanism for race condition with message saving
+  const maxRetries = 3;
+  const retryDelay = 1000; // 1 second
 
-    if (existingVote) {
-      return await db
-        .update(vote)
-        .set({ isUpvoted: type === 'up' })
-        .where(and(eq(vote.messageId, messageId), eq(vote.chatId, chatId)));
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      // First, verify that the message exists
+      const [messageExists] = await db
+        .select({ id: message.id })
+        .from(message)
+        .where(and(eq(message.id, messageId), eq(message.chatId, chatId)));
+
+      if (!messageExists) {
+        if (attempt < maxRetries) {
+          console.log(`Message not found (attempt ${attempt}/${maxRetries}), retrying in ${retryDelay}ms: messageId=${messageId}, chatId=${chatId}`);
+          await new Promise(resolve => setTimeout(resolve, retryDelay));
+          continue;
+        } else {
+          console.error(`Message not found after ${maxRetries} attempts: messageId=${messageId}, chatId=${chatId}`);
+          throw new ChatSDKError('not_found:database', 'Message not found');
+        }
+      }
+
+      const [existingVote] = await db
+        .select()
+        .from(vote)
+        .where(and(eq(vote.messageId, messageId)));
+
+      if (existingVote) {
+        // Try to update with new schema first, fallback to old schema
+        try {
+          return await db
+            .update(vote)
+            .set({ 
+              isUpvoted: type === 'up',
+              updatedAt: new Date()
+            })
+            .where(and(eq(vote.messageId, messageId), eq(vote.chatId, chatId)));
+        } catch (schemaError) {
+          // Fallback to old schema without timestamps
+          return await db
+            .update(vote)
+            .set({ isUpvoted: type === 'up' })
+            .where(and(eq(vote.messageId, messageId), eq(vote.chatId, chatId)));
+        }
+      }
+      
+      // Try to insert with new schema first, fallback to old schema
+      try {
+        return await db.insert(vote).values({
+          chatId,
+          messageId,
+          isUpvoted: type === 'up',
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        });
+      } catch (schemaError) {
+        // Fallback to old schema without timestamps
+        return await db.insert(vote).values({
+          chatId,
+          messageId,
+          isUpvoted: type === 'up',
+        });
+      }
+    } catch (error) {
+      console.error(`Error in voteMessage (attempt ${attempt}/${maxRetries}):`, error);
+      
+      if (attempt === maxRetries) {
+        if (error instanceof ChatSDKError) {
+          throw error;
+        }
+        throw new ChatSDKError('bad_request:database', 'Failed to vote message');
+      }
+      
+      // Wait before retrying
+      await new Promise(resolve => setTimeout(resolve, retryDelay));
     }
-    return await db.insert(vote).values({
-      chatId,
-      messageId,
-      isUpvoted: type === 'up',
-    });
-  } catch (error) {
-    throw new ChatSDKError('bad_request:database', 'Failed to vote message');
   }
 }
 
@@ -589,5 +768,298 @@ export async function getStreamIdsByChatId({ chatId }: { chatId: string }) {
       'bad_request:database',
       'Failed to get stream ids by chat id',
     );
+  }
+}
+
+// Enhanced feedback system functions
+export async function saveResponseFeedback({
+  chatId,
+  messageId,
+  userId,
+  voteType,
+  qualityScore,
+  helpfulnessScore,
+  accuracyScore,
+  clarityScore,
+  downvoteReason,
+  customFeedback,
+  responseTime,
+}: {
+  chatId: string;
+  messageId: string;
+  userId: string;
+  voteType: 'up' | 'down' | 'neutral';
+  qualityScore?: number;
+  helpfulnessScore?: number;
+  accuracyScore?: number;
+  clarityScore?: number;
+  downvoteReason?: 'inaccurate' | 'unhelpful' | 'inappropriate' | 'too_long' | 'too_short' | 'off_topic' | 'other';
+  customFeedback?: string;
+  responseTime?: number;
+}) {
+  try {
+    // Ensure the message exists (race-condition safe)
+    const maxRetries = 3;
+    const retryDelayMs = 400;
+    let found = false;
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      const [msg] = await db
+        .select({ id: message.id })
+        .from(message)
+        .where(and(eq(message.id, messageId), eq(message.chatId, chatId)))
+        .limit(1);
+      if (msg) { found = true; break; }
+      if (attempt < maxRetries) {
+        console.log(`[saveResponseFeedback] message not yet persisted, retrying ${attempt}/${maxRetries}`);
+        await new Promise((r) => setTimeout(r, retryDelayMs));
+      }
+    }
+    if (!found) {
+      console.error('[saveResponseFeedback] Message not found for feedback', { chatId, messageId });
+      throw new ChatSDKError('not_found:database', 'Message not found for feedback');
+    }
+    console.log('[saveResponseFeedback] input', {
+      chatId,
+      messageId,
+      userId,
+      voteType,
+      qualityScore,
+      helpfulnessScore,
+      accuracyScore,
+      clarityScore,
+      downvoteReason,
+      hasCustomFeedback: Boolean(customFeedback && customFeedback.length > 0),
+      responseTime,
+    });
+    // Check if feedback already exists
+    const [existingFeedback] = await db
+      .select()
+      .from(responseFeedback)
+      .where(and(eq(responseFeedback.userId, userId), eq(responseFeedback.messageId, messageId)));
+
+    if (existingFeedback) {
+      // Update existing feedback
+      console.log('[saveResponseFeedback] updating existing feedback id', existingFeedback.id);
+      return await db
+        .update(responseFeedback)
+        .set({
+          voteType,
+          qualityScore,
+          helpfulnessScore,
+          accuracyScore,
+          clarityScore,
+          downvoteReason,
+          customFeedback,
+          responseTime,
+          createdAt: new Date(),
+        })
+        .where(and(eq(responseFeedback.userId, userId), eq(responseFeedback.messageId, messageId)));
+    } else {
+      // Create new feedback
+      console.log('[saveResponseFeedback] inserting new feedback');
+      return await db.insert(responseFeedback).values({
+        chatId,
+        messageId,
+        userId,
+        voteType,
+        qualityScore,
+        helpfulnessScore,
+        accuracyScore,
+        clarityScore,
+        downvoteReason,
+        customFeedback,
+        responseTime,
+      });
+    }
+  } catch (error) {
+    console.error('[saveResponseFeedback] error', error);
+    throw new ChatSDKError('bad_request:database', 'Failed to save response feedback');
+  }
+}
+
+export async function getResponseFeedbackByMessageId({ messageId }: { messageId: string }) {
+  try {
+    return await db
+      .select()
+      .from(responseFeedback)
+      .where(eq(responseFeedback.messageId, messageId));
+  } catch (error) {
+    throw new ChatSDKError('bad_request:database', 'Failed to get response feedback');
+  }
+}
+
+export async function getUserPreferences({ userId }: { userId: string }) {
+  try {
+    return await db
+      .select()
+      .from(userPreferences)
+      .where(eq(userPreferences.userId, userId))
+      .orderBy(desc(userPreferences.confidence));
+  } catch (error) {
+    throw new ChatSDKError('bad_request:database', 'Failed to get user preferences');
+  }
+}
+
+export async function updateUserPreference({
+  userId,
+  preferenceType,
+  preferenceValue,
+  confidence,
+}: {
+  userId: string;
+  preferenceType: 'response_style' | 'detail_level' | 'tone' | 'format' | 'topic_expertise';
+  preferenceValue: string;
+  confidence: number;
+}) {
+  try {
+    const [existingPreference] = await db
+      .select()
+      .from(userPreferences)
+      .where(and(
+        eq(userPreferences.userId, userId),
+        eq(userPreferences.preferenceType, preferenceType),
+        eq(userPreferences.preferenceValue, preferenceValue)
+      ));
+
+    if (existingPreference) {
+      // Update existing preference with weighted average
+      const newConfidence = Math.min(1, existingPreference.confidence + (confidence * 0.1));
+      const newEvidenceCount = existingPreference.evidenceCount + 1;
+      
+      return await db
+        .update(userPreferences)
+        .set({
+          confidence: newConfidence,
+          evidenceCount: newEvidenceCount,
+          lastUpdated: new Date(),
+        })
+        .where(eq(userPreferences.id, existingPreference.id));
+    } else {
+      // Create new preference
+      return await db.insert(userPreferences).values({
+        userId,
+        preferenceType,
+        preferenceValue,
+        confidence,
+        evidenceCount: 1,
+      });
+    }
+  } catch (error) {
+    throw new ChatSDKError('bad_request:database', 'Failed to update user preference');
+  }
+}
+
+export async function saveResponseAnalytics({
+  messageId,
+  model,
+  promptTokens,
+  completionTokens,
+  totalTokens,
+  responseTime,
+}: {
+  messageId: string;
+  model: string;
+  promptTokens?: number;
+  completionTokens?: number;
+  totalTokens?: number;
+  responseTime?: number;
+}) {
+  try {
+    return await db.insert(responseAnalytics).values({
+      messageId,
+      model,
+      promptTokens,
+      completionTokens,
+      totalTokens,
+      responseTime,
+    });
+  } catch (error) {
+    throw new ChatSDKError('bad_request:database', 'Failed to save response analytics');
+  }
+}
+
+export async function updateResponseAnalytics({
+  messageId,
+  averageQualityScore,
+  totalVotes,
+  upvotes,
+  downvotes,
+}: {
+  messageId: string;
+  averageQualityScore?: number;
+  totalVotes?: number;
+  upvotes?: number;
+  downvotes?: number;
+}) {
+  try {
+    const [existingAnalytics] = await db
+      .select()
+      .from(responseAnalytics)
+      .where(eq(responseAnalytics.messageId, messageId));
+
+    if (existingAnalytics) {
+      return await db
+        .update(responseAnalytics)
+        .set({
+          averageQualityScore,
+          totalVotes: totalVotes ?? existingAnalytics.totalVotes,
+          upvotes: upvotes ?? existingAnalytics.upvotes,
+          downvotes: downvotes ?? existingAnalytics.downvotes,
+        })
+        .where(eq(responseAnalytics.messageId, messageId));
+    }
+  } catch (error) {
+    throw new ChatSDKError('bad_request:database', 'Failed to update response analytics');
+  }
+}
+
+export async function getResponseQualityMetrics({
+  userId,
+  limit = 100,
+}: {
+  userId?: string;
+  limit?: number;
+}) {
+  try {
+    // Base select
+    let base = db
+      .select({
+        messageId: responseAnalytics.messageId,
+        model: responseAnalytics.model,
+        averageQualityScore: responseAnalytics.averageQualityScore,
+        totalVotes: responseAnalytics.totalVotes,
+        upvotes: responseAnalytics.upvotes,
+        downvotes: responseAnalytics.downvotes,
+        responseTime: responseAnalytics.responseTime,
+        createdAt: responseAnalytics.createdAt,
+      })
+      .from(responseAnalytics)
+      .orderBy(desc(responseAnalytics.createdAt))
+      .limit(limit);
+
+    // If filtering by user, join via Message_v2 -> Chat
+    if (userId) {
+      base = db
+        .select({
+          messageId: responseAnalytics.messageId,
+          model: responseAnalytics.model,
+          averageQualityScore: responseAnalytics.averageQualityScore,
+          totalVotes: responseAnalytics.totalVotes,
+          upvotes: responseAnalytics.upvotes,
+          downvotes: responseAnalytics.downvotes,
+          responseTime: responseAnalytics.responseTime,
+          createdAt: responseAnalytics.createdAt,
+        })
+        .from(responseAnalytics)
+        .innerJoin(message, eq(responseAnalytics.messageId, message.id))
+        .innerJoin(chat, eq(message.chatId, chat.id))
+        .where(eq(chat.userId, userId))
+        .orderBy(desc(responseAnalytics.createdAt))
+        .limit(limit) as any;
+    }
+
+    return await base.execute();
+  } catch (error) {
+    throw new ChatSDKError('bad_request:database', 'Failed to get response quality metrics');
   }
 }

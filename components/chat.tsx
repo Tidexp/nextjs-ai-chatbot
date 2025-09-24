@@ -184,6 +184,10 @@ export function Chat({
       console.log('[Chat] Message content (if exists):', (message as any).content);
       console.log('[Chat] ===============================');
       mutate(unstable_serialize(getChatHistoryPaginationKey));
+      // Dispatch an event so the sidebar refreshes immediately on first message
+      try {
+        window.dispatchEvent(new Event('chatCreated'));
+      } catch {}
     },
     onError: (error) => {
       console.error('[Chat] SSE Error:', error);

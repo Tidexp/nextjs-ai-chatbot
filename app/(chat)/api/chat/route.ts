@@ -266,6 +266,8 @@ export async function POST(request: Request) {
             visibility: 'private' as VisibilityType,
         });
         isNewChat = true;
+        // Notify client sidebars to refresh via SSE-compatible comment event
+        // Clients can't receive this directly from API, so we rely on the page JS to dispatch a custom event.
     } else if (chat) {
         if (chat.userId !== session.user.id) {
             console.warn(`[POST] Chat userId does not match session userId.`);

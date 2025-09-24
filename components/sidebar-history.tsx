@@ -113,13 +113,12 @@ export function SidebarHistory({ user }: { user: User | undefined }) {
 
   // Listen for title updates and refresh the chat list
   useEffect(() => {
-    const handleTitleUpdate = () => {
-      mutate(); // Refresh the chat list
-    };
-
-    window.addEventListener('chatTitleUpdated', handleTitleUpdate);
+    const refresh = () => mutate();
+    window.addEventListener('chatTitleUpdated', refresh);
+    window.addEventListener('chatCreated', refresh);
     return () => {
-      window.removeEventListener('chatTitleUpdated', handleTitleUpdate);
+      window.removeEventListener('chatTitleUpdated', refresh);
+      window.removeEventListener('chatCreated', refresh);
     };
   }, [mutate]);
 

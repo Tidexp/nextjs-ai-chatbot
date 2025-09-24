@@ -10,6 +10,9 @@ import {
   foreignKey,
   boolean,
   pgEnum,
+  integer,
+  real,
+  unique,
 } from 'drizzle-orm/pg-core';
 
 // Define the user_type enum
@@ -53,16 +56,26 @@ export const messageDeprecated = pgTable('Message', {
 
 export type MessageDeprecated = InferSelectModel<typeof messageDeprecated>;
 
-export const message = pgTable('Message_v2', {
-  id: uuid('id').primaryKey().notNull().defaultRandom(),
-  chatId: uuid('chatId')
-    .notNull()
-    .references(() => chat.id),
-  role: varchar('role').notNull(),
-  parts: json('parts').notNull(),
-  attachments: json('attachments').notNull(),
-  createdAt: timestamp('createdAt').notNull(),
-});
+export const message = pgTable(
+  'Message_v2',
+  {
+    id: uuid('id').primaryKey().notNull().defaultRandom(),
+    chatId: uuid('chatId')
+      .notNull()
+      .references(() => chat.id),
+    role: varchar('role').notNull(),
+    parts: json('parts').notNull(),
+    attachments: json('attachments').notNull(),
+    createdAt: timestamp('createdAt').notNull(),
+    parentMessageId: uuid('parentMessageId'),
+    version: integer('version').notNull().default(1),
+    isActive: boolean('isActive').notNull().default(true),
+    supersededAt: timestamp('supersededAt'),
+  },
+  (table) => ({
+    parentRef: foreignKey({ columns: [table.parentMessageId], foreignColumns: [table.id] }),
+  }),
+);
 
 export type DBMessage = InferSelectModel<typeof message>;
 
@@ -98,6 +111,8 @@ export const vote = pgTable(
       .notNull()
       .references(() => message.id),
     isUpvoted: boolean('isUpvoted').notNull(),
+    createdAt: timestamp('createdAt').notNull().defaultNow(),
+    updatedAt: timestamp('updatedAt').notNull().defaultNow(),
   },
   (table) => {
     return {
@@ -107,6 +122,89 @@ export const vote = pgTable(
 );
 
 export type Vote = InferSelectModel<typeof vote>;
+
+// Enhanced feedback system
+export const responseFeedback = pgTable(
+  'ResponseFeedback',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    chatId: uuid('chatId')
+      .notNull()
+      .references(() => chat.id),
+    messageId: uuid('messageId')
+      .notNull()
+      .references(() => message.id),
+    userId: uuid('userId')
+      .notNull()
+      .references(() => user.id),
+    voteType: text('voteType', { enum: ['up', 'down', 'neutral'] }).notNull(),
+    qualityScore: integer('qualityScore'), // 1-10 scale
+    helpfulnessScore: integer('helpfulnessScore'), // 1-10 scale
+    accuracyScore: integer('accuracyScore'), // 1-10 scale
+    clarityScore: integer('clarityScore'), // 1-10 scale
+    downvoteReason: text('downvoteReason', { 
+      enum: ['inaccurate', 'unhelpful', 'inappropriate', 'too_long', 'too_short', 'off_topic', 'other'] 
+    }),
+    customFeedback: text('customFeedback'),
+    responseTime: integer('responseTime'), // milliseconds
+    createdAt: timestamp('createdAt').notNull().defaultNow(),
+  },
+  (table) => {
+    return {
+      uniqueUserMessage: unique('unique_user_message_feedback').on(table.userId, table.messageId),
+    };
+  },
+);
+
+export type ResponseFeedback = InferSelectModel<typeof responseFeedback>;
+
+// User preference learning
+export const userPreferences = pgTable(
+  'UserPreferences',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('userId')
+      .notNull()
+      .references(() => user.id),
+    preferenceType: text('preferenceType', { 
+      enum: ['response_style', 'detail_level', 'tone', 'format', 'topic_expertise'] 
+    }).notNull(),
+    preferenceValue: text('preferenceValue').notNull(),
+    confidence: real('confidence').notNull().default(0.5), // 0-1 scale
+    evidenceCount: integer('evidenceCount').notNull().default(1),
+    lastUpdated: timestamp('lastUpdated').notNull().defaultNow(),
+  },
+  (table) => {
+    return {
+      uniqueUserPreference: unique('unique_user_preference').on(table.userId, table.preferenceType, table.preferenceValue),
+    };
+  },
+);
+
+export type UserPreferences = InferSelectModel<typeof userPreferences>;
+
+// Response quality analytics
+export const responseAnalytics = pgTable(
+  'ResponseAnalytics',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    messageId: uuid('messageId')
+      .notNull()
+      .references(() => message.id),
+    model: text('model').notNull(),
+    promptTokens: integer('promptTokens'),
+    completionTokens: integer('completionTokens'),
+    totalTokens: integer('totalTokens'),
+    responseTime: integer('responseTime'), // milliseconds
+    averageQualityScore: real('averageQualityScore'),
+    totalVotes: integer('totalVotes').notNull().default(0),
+    upvotes: integer('upvotes').notNull().default(0),
+    downvotes: integer('downvotes').notNull().default(0),
+    createdAt: timestamp('createdAt').notNull().defaultNow(),
+  },
+);
+
+export type ResponseAnalytics = InferSelectModel<typeof responseAnalytics>;
 
 export const document = pgTable(
   'Document',
