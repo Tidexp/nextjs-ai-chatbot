@@ -1,7 +1,7 @@
 'use client';
-import { useChat } from '@ai-sdk/react';
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import useSWR, { useSWRConfig, unstable_serialize } from 'swr';
+import type { ChatStatus } from 'ai';
 import { ChatHeader } from '@/components/chat-header';
 import type { Vote } from '@/lib/db/schema';
 import { fetcher, generateUUID } from '@/lib/utils';
@@ -13,261 +13,322 @@ import { useArtifactSelector } from '@/hooks/use-artifact';
 import { getChatHistoryPaginationKey } from './sidebar-history';
 import { toast } from './toast';
 import type { Session } from 'next-auth';
-import { useSearchParams } from 'next/navigation';
-import { useChatVisibility } from '@/hooks/use-chat-visibility';
-import { useAutoResume } from '@/hooks/use-auto-resume';
-import { ChatSDKError } from '@/lib/errors';
-import type { Attachment, ChatMessage } from '@/lib/types';
-import { useDataStream } from './data-stream-provider';
+import type { ChatMessage } from '@/lib/types';
+
+interface ChatProps {
+  id: string;
+  initialMessages: ChatMessage[];
+  initialChatModel?: string;
+  initialVisibilityType?: VisibilityType;
+  isReadonly?: boolean;
+  session: Session;
+  initialTitle?: string;
+  query?: string;
+  compact?: boolean;
+}
 
 export function Chat({
   id,
   initialMessages,
   initialChatModel,
   initialVisibilityType,
-  isReadonly,
+  isReadonly = false,
   session,
-  autoResume,
   initialTitle,
+  query,
   compact = false,
-}: {
-  id: string;
-  initialMessages: ChatMessage[];
-  initialChatModel: string;
-  initialVisibilityType: VisibilityType;
-  isReadonly: boolean;
-  session: Session;
-  autoResume: boolean;
-  initialTitle?: string;
-  compact?: boolean;
-}) {
-  const { visibilityType } = useChatVisibility({
-    chatId: id,
-    initialVisibilityType,
-  });
-
-  const { mutate } = useSWRConfig();
-  const { setDataStream } = useDataStream();
-
-  const [input, setInput] = useState<string>('');
-  const [attachments, setAttachments] = useState<Attachment[]>([]);
-  // Dev-only debug stream to visibly show incoming deltas immediately
-  const [debugStream, setDebugStream] = useState<string>('');
-  const isArtifactVisible = useArtifactSelector((state) => state.isVisible);
-  const searchParams = useSearchParams();
-  const query = searchParams.get('query');
+}: ChatProps) {
+  const [messages, setMessages] = useState<ChatMessage[]>(initialMessages);
+  const [isLoading, setIsLoading] = useState(false);
+  const [status, setStatus] = useState<ChatStatus>('ready');
+  const [input, setInput] = useState('');
+  const [attachments, setAttachments] = useState<any[]>([]);
   const [hasAppendedQuery, setHasAppendedQuery] = useState(false);
-
-  const streamStarted = false;
-
-  // Utility function to deduplicate messages
-  const deduplicateMessages = useCallback(
-    (messages: ChatMessage[]): ChatMessage[] => {
-      const seen = new Set<string>();
-      const deduplicated: ChatMessage[] = [];
-
-      for (const msg of messages) {
-        if (!msg.id || seen.has(msg.id)) {
-          console.log('[Chat] Skipping duplicate message:', msg.id);
-          continue;
-        }
-
-        // Also check for content-based duplicates to handle cases where IDs might be different
-        const contentKey = `${msg.role}-${JSON.stringify(msg.parts)}`;
-        if (seen.has(contentKey)) {
-          console.log('[Chat] Skipping duplicate content:', contentKey);
-          continue;
-        }
-
-        seen.add(msg.id);
-        seen.add(contentKey);
-        deduplicated.push(msg);
-      }
-
-      console.log(
-        '[Chat] Deduplicated messages:',
-        deduplicated.length,
-        'from',
-        messages.length,
-      );
-      return deduplicated;
-    },
-    [],
+  const [visibilityType, setVisibilityType] = useState<VisibilityType>(
+    initialVisibilityType || 'private',
   );
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const { mutate } = useSWRConfig();
+  const isArtifactVisible = useArtifactSelector((state) => state.isVisible);
 
-  console.log('[Chat] ===== RENDERING CHAT COMPONENT =====');
-  console.log('[Chat] Initial messages:', initialMessages.length);
-  console.log('[Chat] Chat ID:', id);
-  console.log('[Chat] ====================================');
+  // Sync messages with initialMessages when they change (e.g., on page reload)
+  useEffect(() => {
+    setMessages(initialMessages);
+  }, [initialMessages]);
+  const sendMessage = useCallback(
+    async (message: any) => {
+      if (isLoading) return;
 
-  // Test if console.log is working
-  console.log('TEST: Console logging is working');
+      console.log('[Chat] Sending message:', message);
 
-  const {
-    messages,
-    setMessages,
-    sendMessage,
-    status,
-    stop,
-    regenerate,
-    resumeStream,
-  } = useChat<ChatMessage>({
-    id,
-    messages: initialMessages,
-    experimental_throttle: 0, // Disable throttling for immediate streaming
-    generateId: () => generateUUID(), // Generate new IDs only for new messages
-    onData: (data) => {
-      console.log('[Chat] ===== SSE DATA RECEIVED =====');
-      console.log('[Chat] Data:', data);
-      console.log('[Chat] Type:', typeof data);
-      console.log('[Chat] Keys:', Object.keys(data || {}));
-      console.log('[Chat] Raw data string:', JSON.stringify(data));
-      console.log('[Chat] Data type:', data?.type);
-      console.log('[Chat] Data text:', (data as any)?.text);
-      console.log('[Chat] Data delta:', (data as any)?.delta);
-      console.log('[Chat] Data id:', (data as any)?.id);
-      console.log('[Chat] =============================');
+      const userMessage: ChatMessage = {
+        id: generateUUID(),
+        role: 'user',
+        parts: message.parts || [{ type: 'text', text: message.content }],
+        createdAt: new Date().toISOString(),
+      } as ChatMessage;
 
-      if (data && typeof data === 'object') {
-        const messageId = (data as any).id;
-        const type = (data as any).type;
+      // Add user message to UI
+      let messagesToSend: ChatMessage[] = [];
+      setMessages((prev) => {
+        messagesToSend = [...prev, userMessage];
+        return messagesToSend;
+      });
+      setStatus('submitted');
+      setIsLoading(true);
 
-        if (type === 'text-start' && messageId) {
-          // Create new assistant message with server-provided messageId
-          console.log('[Chat] Processing text-start:', { messageId });
-          setMessages((prev) => {
-            // Check if message already exists (avoid duplicates)
-            const existingMessage = prev.find((msg) => msg.id === messageId);
-            if (existingMessage) {
-              return prev;
+      try {
+        abortControllerRef.current = new AbortController();
+
+        const response = await fetch('/api/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            chatId: id,
+            messages: messagesToSend.map((msg) => ({
+              id: msg.id,
+              role: msg.role,
+              content: (msg as any).parts || [],
+            })),
+          }),
+          signal: abortControllerRef.current.signal,
+        });
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          console.error('[Chat] API error:', errorText);
+          throw new Error(`Failed to get response: ${response.status}`);
+        }
+
+        // Get the message ID from server response headers
+        const serverMessageId = response.headers.get('X-Message-Id');
+        console.log('[Chat] Server message ID:', serverMessageId);
+
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder();
+        let assistantText = '';
+
+        const assistantMessage: ChatMessage = {
+          id: serverMessageId || generateUUID(),
+          role: 'assistant',
+          parts: [{ type: 'text', text: '' }],
+          createdAt: new Date().toISOString(),
+        } as ChatMessage;
+
+        setStatus('streaming');
+        setMessages((prev) => [...prev, assistantMessage]);
+
+        if (reader) {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) {
+              console.log('[Chat] Stream completed');
+              break;
             }
 
-            return [
-              ...prev,
-              {
-                id: messageId,
-                role: 'assistant',
-                parts: [{ type: 'text', text: '' }],
-                createdAt: new Date().toISOString(),
-              },
-            ];
-          });
-        }
+            const chunk = decoder.decode(value, { stream: true });
 
-        if (type === 'text-delta' && messageId) {
-          const delta = (data as any).delta;
-          if (delta) {
-            console.log('[Chat] Processing text-delta:', {
-              messageId,
-              delta: `${delta.slice(0, 50)}...`,
-            });
-            // Append to a short-lived debug buffer so we can see streaming in the UI
-            try {
-              setDebugStream((s) => (s + delta).slice(-2000));
-            } catch {}
-            setMessages((prev) => {
-              let found = false;
-              const updated = prev.map((msg) => {
-                if (msg.id === messageId && msg.role === 'assistant') {
-                  found = true;
-                  // Find existing text part and append delta
-                  const textPart = msg.parts?.find(
-                    (p: any) => p.type === 'text',
-                  );
-                  const currentText = textPart
-                    ? (textPart as any).text || ''
-                    : '';
-                  const newText = currentText + delta;
+            if (chunk) {
+              assistantText += chunk;
 
-                  return {
-                    ...msg,
-                    parts: [{ type: 'text', text: newText }],
-                  };
+              setMessages((prev) => {
+                const updated = [...prev];
+                const lastMsg = updated[updated.length - 1];
+                if (lastMsg && lastMsg.role === 'assistant') {
+                  (lastMsg as any).parts = [
+                    { type: 'text', text: assistantText },
+                  ];
                 }
-                return msg;
+                return updated;
               });
-
-              if (found) return updated;
-
-              // If no existing assistant message with this id, append one so partial deltas are visible
-              return [
-                ...prev,
-                {
-                  id: messageId,
-                  role: 'assistant',
-                  parts: [{ type: 'text', text: delta }],
-                  createdAt: new Date().toISOString(),
-                } as any,
-              ];
-            });
+            }
           }
         }
 
-        if (type === 'text-end' && messageId) {
-          console.log('[Chat] Processing text-end:', { messageId });
-          // Message is complete, no additional action needed
-          // The message already has all the accumulated text
+        console.log('[Chat] Finished reading stream, refreshing sidebar');
+        mutate(unstable_serialize(getChatHistoryPaginationKey));
+        try {
+          window.dispatchEvent(new Event('chatCreated'));
+        } catch {}
+      } catch (error: any) {
+        console.error('[Chat] Error:', error);
+
+        if (error.name === 'AbortError') {
+          return; // User cancelled, ignore
+        }
+
+        const errorMessage: ChatMessage = {
+          id: generateUUID(),
+          role: 'assistant',
+          parts: [
+            {
+              type: 'text',
+              text: 'Sorry, I encountered an error. Please try again.',
+            },
+          ],
+          createdAt: new Date().toISOString(),
+        } as ChatMessage;
+
+        setMessages((prev) => [...prev, errorMessage]);
+
+        toast({
+          type: 'error',
+          description: error?.message || 'An error occurred',
+        });
+      } finally {
+        setStatus('ready');
+        setIsLoading(false);
+        abortControllerRef.current = null;
+      }
+    },
+    [isLoading, id, mutate, messages],
+  );
+
+  const stop = useCallback(async () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      setStatus('ready');
+      setIsLoading(false);
+    }
+  }, []);
+
+  const regenerate = useCallback(
+    async ({ messageId: assistantMessageId }: { messageId?: string } = {}) => {
+      if (isLoading) return;
+
+      // Determine which assistant message to regenerate.
+      // If none supplied, fall back to latest assistant message.
+      let targetAssistantIndex = -1;
+      if (assistantMessageId) {
+        targetAssistantIndex = messages.findIndex(
+          (m) => m.id === assistantMessageId && m.role === 'assistant',
+        );
+      } else {
+        // Find last assistant
+        for (let i = messages.length - 1; i >= 0; i--) {
+          if (messages[i].role === 'assistant') {
+            targetAssistantIndex = i;
+            break;
+          }
         }
       }
-    },
-    onToolCall: (toolCall) => {
-      console.log('[Chat] ===== TOOL CALL RECEIVED =====');
-      console.log('[Chat] Tool Call:', toolCall);
-      console.log('[Chat] ==============================');
-    },
-    onFinish: ({ message }) => {
-      console.log('[Chat] ===== SSE STREAM FINISHED =====');
-      console.log('[Chat] Message:', message);
-      console.log('[Chat] Message parts:', message.parts);
-      console.log('[Chat] Message keys:', Object.keys(message));
-      console.log(
-        '[Chat] Message content (if exists):',
-        (message as any).content,
-      );
-      console.log('[Chat] ===============================');
-      mutate(unstable_serialize(getChatHistoryPaginationKey));
-      // Dispatch an event so the sidebar refreshes immediately on first message
-      try {
-        window.dispatchEvent(new Event('chatCreated'));
-      } catch {}
-    },
-    onError: (error) => {
-      console.error('[Chat] SSE Error:', error);
-      console.error('[Chat] Error details:', {
-        message: error?.message,
-        name: error?.name,
-        stack: error?.stack,
-      });
 
-      if (error instanceof ChatSDKError) {
-        toast({ type: 'error', description: error.message });
-      } else if (error?.message?.includes('Failed to fetch')) {
+      if (targetAssistantIndex === -1) return;
+
+      // Find the preceding user message for context
+      let precedingUserIndex = -1;
+      for (let i = targetAssistantIndex - 1; i >= 0; i--) {
+        if (messages[i].role === 'user') {
+          precedingUserIndex = i;
+          break;
+        }
+      }
+      if (precedingUserIndex === -1) return;
+
+      const userMessage = messages[precedingUserIndex];
+
+      // Keep all messages up to and including the triggering user message.
+      const baseMessages = messages.slice(0, precedingUserIndex + 1);
+      setMessages(baseMessages); // remove assistant + trailing messages
+
+      // Start streaming a new assistant response WITHOUT duplicating the user message.
+      setStatus('submitted');
+      setIsLoading(true);
+
+      try {
+        abortControllerRef.current = new AbortController();
+
+        const response = await fetch('/api/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            chatId: id,
+            messages: baseMessages.map((msg) => ({
+              id: msg.id,
+              role: msg.role,
+              content: (msg as any).parts || [],
+            })),
+          }),
+          signal: abortControllerRef.current.signal,
+        });
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          console.error('[Chat][regenerate] API error:', errorText);
+          throw new Error(`Failed to regenerate: ${response.status}`);
+        }
+
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder();
+        let assistantText = '';
+
+        const assistantMessage: ChatMessage = {
+          id: generateUUID(),
+          role: 'assistant',
+          parts: [{ type: 'text', text: '' }],
+          createdAt: new Date().toISOString(),
+        } as ChatMessage;
+
+        setStatus('streaming');
+        setMessages((prev) => [...prev, assistantMessage]);
+
+        if (reader) {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) {
+              console.log('[Chat][regenerate] Stream completed');
+              break;
+            }
+            const chunk = decoder.decode(value, { stream: true });
+            if (chunk) {
+              assistantText += chunk;
+              setMessages((prev) => {
+                const updated = [...prev];
+                const lastMsg = updated[updated.length - 1];
+                if (lastMsg && lastMsg.role === 'assistant') {
+                  (lastMsg as any).parts = [
+                    { type: 'text', text: assistantText },
+                  ];
+                }
+                return updated;
+              });
+            }
+          }
+        }
+
+        mutate(unstable_serialize(getChatHistoryPaginationKey));
+      } catch (error: any) {
+        console.error('[Chat][regenerate] Error:', error);
+        if (error.name === 'AbortError') return;
+        const errorMessage: ChatMessage = {
+          id: generateUUID(),
+          role: 'assistant',
+          parts: [
+            {
+              type: 'text',
+              text: 'Sorry, regeneration failed. Please try again.',
+            },
+          ],
+          createdAt: new Date().toISOString(),
+        } as ChatMessage;
+        setMessages((prev) => [...prev, errorMessage]);
         toast({
           type: 'error',
-          description:
-            'Connection failed. The AI service may be temporarily unavailable. Please try again.',
+          description: error?.message || 'Regeneration failed',
         });
-      } else if (error?.message?.includes('503')) {
-        toast({
-          type: 'error',
-          description:
-            'AI service is overloaded. Please try again in a moment.',
-        });
-      } else {
-        toast({
-          type: 'error',
-          description: `An error occurred: ${error?.message || 'Unknown error'}`,
-        });
+      } finally {
+        setStatus('ready');
+        setIsLoading(false);
+        abortControllerRef.current = null;
       }
     },
-  });
+    [messages, isLoading, id, mutate],
+  );
 
   // Send query from URL once
   useEffect(() => {
     if (query && !hasAppendedQuery) {
-      console.log('[Chat] ===== SENDING MESSAGE FROM URL =====');
-      console.log('[Chat] Query:', query);
-      console.log('[Chat] =====================================');
+      console.log('[Chat] Sending message from URL query');
       sendMessage({
         role: 'user',
         parts: [{ type: 'text', text: query }],
@@ -277,27 +338,9 @@ export function Chat({
     }
   }, [query, sendMessage, hasAppendedQuery, id]);
 
-  // Debug sendMessage function
-  const debugSendMessage = useCallback(
-    (message: any) => {
-      console.log('[Chat] ===== SENDMESSAGE CALLED =====');
-      console.log('[Chat] Message:', message);
-      console.log('[Chat] Status before:', status);
-      console.log('[Chat] ===============================');
-      return sendMessage(message);
-    },
-    [sendMessage, status],
+  const hasAssistantMessage = messages.some(
+    (m: ChatMessage) => m.role === 'assistant',
   );
-
-  // Debug status changes
-  useEffect(() => {
-    console.log('[Chat] ===== STATUS CHANGED =====');
-    console.log('[Chat] Status:', status);
-    console.log('[Chat] Messages count:', messages.length);
-    console.log('[Chat] ==========================');
-  }, [status, messages.length]);
-
-  const hasAssistantMessage = messages.some((m) => m.role === 'assistant');
   const { data: votes } = useSWR<Vote[]>(
     hasAssistantMessage ? `/api/vote?chatId=${id}` : null,
     fetcher,
@@ -306,43 +349,6 @@ export function Chat({
       revalidateOnFocus: false,
     },
   );
-
-  useAutoResume({ autoResume, initialMessages, resumeStream, setMessages });
-
-  // Clean up duplicates when messages change (but avoid infinite loops)
-  const [lastMessageCount, setLastMessageCount] = useState(messages.length);
-  useEffect(() => {
-    if (messages.length !== lastMessageCount) {
-      console.log(
-        '[Chat] Message count changed from',
-        lastMessageCount,
-        'to',
-        messages.length,
-      );
-      setLastMessageCount(messages.length);
-
-      // Check for duplicates and clean them up
-      const duplicates = messages.filter(
-        (msg, index) => messages.findIndex((m) => m.id === msg.id) !== index,
-      );
-
-      if (duplicates.length > 0) {
-        console.log(
-          '[Chat] Found',
-          duplicates.length,
-          'duplicate messages, deduplicating...',
-        );
-        const deduplicated = deduplicateMessages(messages);
-        setMessages(deduplicated);
-      }
-    }
-  }, [
-    messages.length,
-    lastMessageCount,
-    messages,
-    setMessages,
-    deduplicateMessages,
-  ]);
 
   return (
     <>
@@ -356,8 +362,8 @@ export function Chat({
         {!compact && (
           <ChatHeader
             chatId={id}
-            selectedModelId={initialChatModel}
-            selectedVisibilityType={initialVisibilityType}
+            selectedModelId={initialChatModel || ''}
+            selectedVisibilityType={initialVisibilityType || 'private'}
             isReadonly={isReadonly}
             session={session}
             title={initialTitle}
@@ -400,16 +406,6 @@ export function Chat({
               selectedVisibilityType={visibilityType}
             />
           )}
-        </div>
-      </div>
-
-      {/* Dev-only streaming debug overlay (shows last ~2000 chars of received deltas) */}
-      <div
-        aria-hidden
-        className="fixed left-4 bottom-28 z-[60] pointer-events-none"
-      >
-        <div className="max-w-md p-2 rounded bg-black/60 text-xs text-white font-mono whitespace-pre-wrap">
-          {debugStream}
         </div>
       </div>
 

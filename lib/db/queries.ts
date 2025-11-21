@@ -271,16 +271,19 @@ export async function saveChat({
     }
 
     console.log('Creating chat for user:', userId, 'with title:', title);
-    return await db.insert(chat).values({
-      id,
-      createdAt: new Date(),
-      userId,
-      title,
-      visibility,
-      ...(lessonId ? { lessonId } : {}),
-      ...(topicId ? { topicId } : {}),
-      ...(moduleId ? { moduleId } : {}),
-    });
+    return await db
+      .insert(chat)
+      .values({
+        id,
+        createdAt: new Date(),
+        userId,
+        title,
+        visibility,
+        ...(lessonId ? { lessonId } : {}),
+        ...(topicId ? { topicId } : {}),
+        ...(moduleId ? { moduleId } : {}),
+      })
+      .onConflictDoNothing();
   } catch (error) {
     console.error('Database error in saveChat:', error);
     throw new ChatSDKError('bad_request:database', 'Failed to save chat');
@@ -560,8 +563,13 @@ export async function saveMessages({
   messages: Array<InferInsertModel<typeof message>>;
 }) {
   try {
-    return await db.insert(message).values(messages);
+    return await db.insert(message).values(messages).onConflictDoNothing();
   } catch (error) {
+    console.error('[saveMessages] Database error:', error);
+    console.error(
+      '[saveMessages] Attempted to save:',
+      JSON.stringify(messages, null, 2),
+    );
     throw new ChatSDKError('bad_request:database', 'Failed to save messages');
   }
 }

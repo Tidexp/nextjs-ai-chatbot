@@ -1,9 +1,6 @@
 import { auth, type UserType } from '@/app/(auth)/auth';
 import { systemPrompt } from '@/lib/ai/prompts';
 import {
-  createStreamId,
-  deleteChatById,
-  deleteAllChatsByUserId,
   getChatById,
   getChatsByUserId,
   getMessageCountByUserId,
@@ -12,7 +9,7 @@ import {
   saveMessages,
   getLessonContextByChatId,
 } from '@/lib/db/queries';
-import { convertToUIMessages, generateUUID } from '@/lib/utils';
+import { generateUUID } from '@/lib/utils';
 import { myProvider, type GeminiModelId } from '@/lib/ai/providers';
 import { entitlementsByUserType } from '@/lib/ai/entitlements';
 import { postRequestBodySchema, type PostRequestBody } from './schema';
@@ -22,9 +19,7 @@ import {
 } from 'resumable-stream';
 import { after } from 'next/server';
 import { ChatSDKError } from '@/lib/errors';
-import type { ChatMessage } from '@/lib/types';
 import { chatModels, DEFAULT_CHAT_MODEL } from '@/lib/ai/models';
-import type { VisibilityType } from '@/components/visibility-selector';
 import { streamText } from 'ai';
 
 export const maxDuration = 60;
@@ -117,7 +112,24 @@ export async function POST(request: Request) {
     const json = await request.json();
     console.log('[POST] Raw request body:', JSON.stringify(json, null, 2));
 
+    // Parse with relaxed limits (schema no longer enforces 16k on every part)
     requestBody = postRequestBodySchema.parse(json);
+
+    // Enforce 16k only on NEW user input parts; allow longer assistant/history parts
+    for (const msg of requestBody.messages) {
+      if (msg.role === 'user' && Array.isArray(msg.content)) {
+        for (const part of msg.content) {
+          if (
+            part.type === 'text' &&
+            typeof part.text === 'string' &&
+            part.text.length > 16000
+          ) {
+            console.warn('[POST] User text exceeded 16000 chars, trimming');
+            part.text = part.text.slice(0, 16000);
+          }
+        }
+      }
+    }
 
     // The AI SDK sends requests to /api/chat by default, not /api/chat/{id}
     // We need to extract the chat ID from the request body or use a different approach
@@ -278,77 +290,34 @@ export async function POST(request: Request) {
     console.log(`[POST] Received chatId from request: ${requestBody.chatId}`);
     console.log(`[POST] Using chatId: ${chatId}`);
 
+    // Quick validation: check if chat exists and user owns it
     const chat = await getChatById({ id: chatId });
-    let isNewChat = false;
 
-    if (!chat) {
-      console.log(`[POST] No chat found, creating new chat with ID: ${chatId}`);
-      await saveChat({
-        id: chatId,
-        userId: session.user.id,
-        title: 'New Chat',
-        visibility: 'private' as VisibilityType,
-      });
-      isNewChat = true;
-      // Notify client sidebars to refresh via SSE-compatible comment event
-      // Clients can't receive this directly from API, so we rely on the page JS to dispatch a custom event.
-    } else if (chat) {
-      if (chat.userId !== session.user.id) {
-        console.warn(`[POST] Chat userId does not match session userId.`);
-        return new ChatSDKError('forbidden:chat').toResponse();
-      }
+    if (chat && chat.userId !== session.user.id) {
+      console.warn(`[POST] Chat userId does not match session userId.`);
+      return new ChatSDKError('forbidden:chat').toResponse();
     }
 
-    // Get existing messages from database
-    const messagesFromDb = await getMessagesByChatId({ id: chatId });
-    const existingUIMessages = convertToUIMessages(messagesFromDb);
-    console.log(
-      `[POST] Existing UI Messages from DB:`,
-      JSON.stringify(existingUIMessages, null, 2),
-    );
+    // Get existing messages to check for duplicates (fast query with index)
+    const [existingMessages, convertedMessages] = await Promise.all([
+      getMessagesByChatId({ id: chatId }),
+      Promise.resolve(convertSchemaMessagesToUIMessages(messages)),
+    ]);
 
-    // Convert schema messages to UI messages
-    const uiMessages = convertSchemaMessagesToUIMessages(messages);
+    const existingMessageIds = new Set(
+      existingMessages.map((m: { id: any }) => m.id),
+    );
+    const uiMessages = convertedMessages;
+
     console.log(
       `[POST] UI Messages from request:`,
       JSON.stringify(uiMessages, null, 2),
     );
 
-    // The AI SDK sends ALL messages in the conversation, but we only want to save the NEW user message
-    // Find the last user message that's not already in the database
-    const newUserMessages: ChatMessage[] = [];
-    for (const msg of uiMessages) {
-      if (msg.role === 'user') {
-        // First check if this message already exists by ID (more reliable)
-        const existsById = existingUIMessages.some(
-          (existing) => existing.id === msg.id,
-        );
-
-        // If not found by ID, check by content (fallback for messages without IDs)
-        const existsByContent =
-          !existsById &&
-          existingUIMessages.some(
-            (existing) =>
-              existing.role === 'user' &&
-              JSON.stringify((existing as any).parts || []) ===
-                JSON.stringify(msg.parts || []),
-          );
-
-        if (!existsById && !existsByContent) {
-          newUserMessages.push(msg);
-        }
-      }
-    }
-
-    console.log(
-      `[POST] New user messages to save:`,
-      JSON.stringify(newUserMessages, null, 2),
-    );
-
-    // For AI processing, use the messages from the request (which includes full conversation history)
+    // For AI processing, use the messages from the request
     const messagesForAI = uiMessages;
 
-    // Check if this chat is associated with a lesson
+    // Quick lesson context lookup (usually cached or fast)
     const lessonContext = await getLessonContextByChatId({ chatId });
 
     // Build system prompt with lesson context if available
@@ -388,57 +357,39 @@ export async function POST(request: Request) {
       ];
     }
 
-    // Save new user messages to database
+    // Save chat and new messages (chat first due to foreign key)
+    const isNewChat = !chat;
+
+    // Find NEW user messages that aren't in the database yet
+    const newUserMessages = uiMessages.filter(
+      (msg: any) => msg.role === 'user' && !existingMessageIds.has(msg.id),
+    );
+
+    // Save chat first if it's new (required for foreign key constraint)
+    if (isNewChat) {
+      console.log(`[POST] Creating new chat: ${chatId}`);
+      await saveChat({
+        id: chatId,
+        userId: session.user.id,
+        title: 'New Chat',
+        visibility: 'private',
+      });
+    }
+
+    // Now save messages (chat must exist first)
     if (newUserMessages.length > 0) {
-      console.log(
-        `[POST] Saving new user messages to DB:`,
-        JSON.stringify(newUserMessages, null, 2),
-      );
+      console.log(`[POST] Saving ${newUserMessages.length} new user messages`);
       await saveMessages({
-        messages: newUserMessages.map((message) => ({
+        messages: newUserMessages.map((msg: any) => ({
           chatId,
-          id: message.id,
+          id: msg.id,
           role: 'user',
-          parts: (message as any).content || (message as any).parts || [],
+          parts: msg.parts || [],
           attachments: [],
           createdAt: new Date(),
         })),
       });
     }
-
-    // Get the last user message for title generation
-    const lastUserMessage =
-      newUserMessages.length > 0
-        ? newUserMessages[newUserMessages.length - 1]
-        : null;
-
-    // Title generation disabled - all chats will show as "New Chat"
-    // if (isNewChat && lastUserMessage) {
-    //   console.log(`[POST] Generating title from user message:`, JSON.stringify(lastUserMessage, null, 2));
-    //
-    //   // Start title generation immediately, don't wait for AI response
-    //   (async () => {
-    //     try {
-    //       const { generateTitleFromUserMessage } = await import('@/app/(chat)/actions');
-    //       const generatedTitle = await generateTitleFromUserMessage({
-    //         message: lastUserMessage as any,
-    //       });
-    //       const userText = (lastUserMessage as any).parts?.find((p: any) => p.type === 'text')?.text || 'no text';
-    //       console.log(`[POST] Generated title: "${generatedTitle}" from user message: "${userText}"`);
-    //
-    //       if (generatedTitle && generatedTitle.trim() && generatedTitle !== 'New Chat') {
-    //         await updateChatTitleById({ chatId, title: generatedTitle });
-    //         console.log(`[POST] Updated chat title to: ${generatedTitle}`);
-    //       }
-    //     } catch (error) {
-    //       console.warn('[POST] Failed to generate title:', error);
-    //     }
-    //   })(); // Run immediately, no delay
-    // }
-
-    const streamId = generateUUID();
-    await createStreamId({ streamId, chatId });
-    console.log(`[POST] Created stream ID: ${streamId}`);
 
     // Use the custom provider directly for streaming
     // Include system message if topic is specified
@@ -478,80 +429,36 @@ export async function POST(request: Request) {
     // Standard Vercel AI SDK streamText() for proper SSE streaming
     // Use standard streamText() which works with useChat hook
     console.log('[POST] Starting streamText() for model:', selectedChatModel);
+
+    const messageId = generateUUID();
+
     const result = streamText({
       model: myProvider.languageModel(selectedChatModel as GeminiModelId),
       messages: promptMessages as any,
-      // onFinish removed - we handle saving in the stream manually for better error recovery
     });
 
-    console.log('[POST] Returning streaming response with data stream format');
-    // Create a readable stream that formats data for useChat's onData handler
-    const messageId = generateUUID();
-    let hasStarted = false;
+    console.log('[POST] Returning streaming response with text stream');
+
+    // Create a pass-through stream that captures the text while streaming to client
+    const encoder = new TextEncoder();
     let accumulatedText = '';
 
-    const encoder = new TextEncoder();
-    const responseStream = new ReadableStream({
-      async start(controller) {
-        try {
-          for await (const chunk of result.fullStream) {
-            if (chunk.type === 'text-delta') {
-              // Send text-start on first chunk
-              if (!hasStarted) {
-                const startData = JSON.stringify({
-                  type: 'text-start',
-                  id: messageId,
-                });
-                controller.enqueue(encoder.encode(`data: ${startData}\n\n`));
-                hasStarted = true;
-              }
+    const transformStream = new TransformStream({
+      transform(chunk, controller) {
+        // chunk is already a string from textStream
+        const text = typeof chunk === 'string' ? chunk : String(chunk);
+        accumulatedText += text;
 
-              // Accumulate text for error recovery
-              accumulatedText += chunk.text;
-
-              // Send text-delta with the text property (not textDelta)
-              const deltaData = JSON.stringify({
-                type: 'text-delta',
-                id: messageId,
-                delta: chunk.text,
-              });
-              controller.enqueue(encoder.encode(`data: ${deltaData}\n\n`));
-            }
-          }
-
-          // Stream completed successfully - save the full message
-          if (accumulatedText.length > 0) {
-            console.log('[POST] Stream finished successfully, saving message');
-            await saveMessages({
-              messages: [
-                {
-                  id: messageId,
-                  role: 'assistant',
-                  parts: [{ type: 'text', text: accumulatedText }],
-                  createdAt: new Date(),
-                  attachments: [],
-                  chatId,
-                },
-              ],
-            });
-            console.log('[POST] Message saved:', messageId);
-          }
-
-          // Send text-end
-          const endData = JSON.stringify({ type: 'text-end', id: messageId });
-          controller.enqueue(encoder.encode(`data: ${endData}\n\n`));
-          controller.close();
-        } catch (error) {
-          console.error('[POST] Stream error:', error);
-
-          // If we got some text before the error, save it and send completion
-          if (accumulatedText.length > 0) {
-            console.log(
-              '[POST] Saving partial response before error:',
-              accumulatedText.substring(0, 100),
-            );
-
-            // Save the partial message to database
+        // Encode to bytes for Response
+        controller.enqueue(encoder.encode(text));
+      },
+      flush() {
+        console.log('[POST] Transform stream flush called');
+        // Save accumulated text when stream ends
+        if (accumulatedText && accumulatedText.length > 0) {
+          console.log('[POST] Stream finished, saving assistant message');
+          // Use after() to ensure save completes even after response ends
+          after(async () => {
             try {
               await saveMessages({
                 messages: [
@@ -565,34 +472,23 @@ export async function POST(request: Request) {
                   },
                 ],
               });
-              console.log('[POST] Partial message saved:', messageId);
+              console.log('[POST] Assistant message saved:', messageId);
             } catch (saveError) {
               console.error(
-                '[POST] Failed to save partial message:',
+                '[POST] Failed to save assistant message:',
                 saveError,
               );
             }
-
-            // Send text-end so frontend shows the partial response
-            try {
-              const endData = JSON.stringify({
-                type: 'text-end',
-                id: messageId,
-              });
-              controller.enqueue(encoder.encode(`data: ${endData}\n\n`));
-            } catch {}
-          }
-
-          controller.close();
+          });
         }
       },
     });
 
-    return new Response(responseStream, {
+    // Pipe the text stream through our transform stream
+    return new Response(result.textStream.pipeThrough(transformStream), {
       headers: {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        Connection: 'keep-alive',
+        'Content-Type': 'text/plain; charset=utf-8',
+        'X-Message-Id': messageId,
       },
     });
   } catch (error) {

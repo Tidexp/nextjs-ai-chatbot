@@ -21,7 +21,13 @@ interface FeedbackModalProps {
   voteType: 'up' | 'down';
 }
 
-function FeedbackModal({ isOpen, onClose, onSubmit, messageId, voteType }: FeedbackModalProps) {
+function FeedbackModal({
+  isOpen,
+  onClose,
+  onSubmit,
+  messageId,
+  voteType,
+}: FeedbackModalProps) {
   const [qualityScore, setQualityScore] = useState<number>(5);
   const [helpfulnessScore, setHelpfulnessScore] = useState<number>(5);
   const [accuracyScore, setAccuracyScore] = useState<number>(5);
@@ -49,10 +55,12 @@ function FeedbackModal({ isOpen, onClose, onSubmit, messageId, voteType }: Feedb
         <h3 className="text-lg font-semibold mb-4">
           {voteType === 'up' ? '👍' : '👎'} Rate this response
         </h3>
-        
+
         <div className="space-y-4">
           <div>
-            <label className="block text-sm font-medium mb-2">Overall Quality (1-10)</label>
+            <label className="block text-sm font-medium mb-2">
+              Overall Quality (1-10)
+            </label>
             <input
               type="range"
               min="1"
@@ -61,7 +69,7 @@ function FeedbackModal({ isOpen, onClose, onSubmit, messageId, voteType }: Feedb
               onChange={(e) => setQualityScore(Number(e.target.value))}
               className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer slider"
               style={{
-                background: `linear-gradient(to right, #3b82f6 0%, #3b82f6 ${(qualityScore - 1) * 11.11}%, #e5e7eb ${(qualityScore - 1) * 11.11}%, #e5e7eb 100%)`
+                background: `linear-gradient(to right, #3b82f6 0%, #3b82f6 ${(qualityScore - 1) * 11.11}%, #e5e7eb ${(qualityScore - 1) * 11.11}%, #e5e7eb 100%)`,
               }}
             />
             <div className="flex justify-between text-xs text-gray-500 mt-1">
@@ -72,7 +80,9 @@ function FeedbackModal({ isOpen, onClose, onSubmit, messageId, voteType }: Feedb
           </div>
 
           <div>
-            <label className="block text-sm font-medium mb-2">Helpfulness (1-10)</label>
+            <label className="block text-sm font-medium mb-2">
+              Helpfulness (1-10)
+            </label>
             <input
               type="range"
               min="1"
@@ -81,7 +91,7 @@ function FeedbackModal({ isOpen, onClose, onSubmit, messageId, voteType }: Feedb
               onChange={(e) => setHelpfulnessScore(Number(e.target.value))}
               className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer slider"
               style={{
-                background: `linear-gradient(to right, #3b82f6 0%, #3b82f6 ${(helpfulnessScore - 1) * 11.11}%, #e5e7eb ${(helpfulnessScore - 1) * 11.11}%, #e5e7eb 100%)`
+                background: `linear-gradient(to right, #3b82f6 0%, #3b82f6 ${(helpfulnessScore - 1) * 11.11}%, #e5e7eb ${(helpfulnessScore - 1) * 11.11}%, #e5e7eb 100%)`,
               }}
             />
             <div className="flex justify-between text-xs text-gray-500 mt-1">
@@ -92,7 +102,9 @@ function FeedbackModal({ isOpen, onClose, onSubmit, messageId, voteType }: Feedb
           </div>
 
           <div>
-            <label className="block text-sm font-medium mb-2">Accuracy (1-10)</label>
+            <label className="block text-sm font-medium mb-2">
+              Accuracy (1-10)
+            </label>
             <input
               type="range"
               min="1"
@@ -101,7 +113,7 @@ function FeedbackModal({ isOpen, onClose, onSubmit, messageId, voteType }: Feedb
               onChange={(e) => setAccuracyScore(Number(e.target.value))}
               className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer slider"
               style={{
-                background: `linear-gradient(to right, #3b82f6 0%, #3b82f6 ${(accuracyScore - 1) * 11.11}%, #e5e7eb ${(accuracyScore - 1) * 11.11}%, #e5e7eb 100%)`
+                background: `linear-gradient(to right, #3b82f6 0%, #3b82f6 ${(accuracyScore - 1) * 11.11}%, #e5e7eb ${(accuracyScore - 1) * 11.11}%, #e5e7eb 100%)`,
               }}
             />
             <div className="flex justify-between text-xs text-gray-500 mt-1">
@@ -112,7 +124,9 @@ function FeedbackModal({ isOpen, onClose, onSubmit, messageId, voteType }: Feedb
           </div>
 
           <div>
-            <label className="block text-sm font-medium mb-2">Clarity (1-10)</label>
+            <label className="block text-sm font-medium mb-2">
+              Clarity (1-10)
+            </label>
             <input
               type="range"
               min="1"
@@ -121,7 +135,7 @@ function FeedbackModal({ isOpen, onClose, onSubmit, messageId, voteType }: Feedb
               onChange={(e) => setClarityScore(Number(e.target.value))}
               className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer slider"
               style={{
-                background: `linear-gradient(to right, #3b82f6 0%, #3b82f6 ${(clarityScore - 1) * 11.11}%, #e5e7eb ${(clarityScore - 1) * 11.11}%, #e5e7eb 100%)`
+                background: `linear-gradient(to right, #3b82f6 0%, #3b82f6 ${(clarityScore - 1) * 11.11}%, #e5e7eb ${(clarityScore - 1) * 11.11}%, #e5e7eb 100%)`,
               }}
             />
             <div className="flex justify-between text-xs text-gray-500 mt-1">
@@ -133,7 +147,9 @@ function FeedbackModal({ isOpen, onClose, onSubmit, messageId, voteType }: Feedb
 
           {voteType === 'down' && (
             <div>
-              <label className="block text-sm font-medium mb-2">Why was this response not helpful?</label>
+              <label className="block text-sm font-medium mb-2">
+                Why was this response not helpful?
+              </label>
               <select
                 value={downvoteReason}
                 onChange={(e) => setDownvoteReason(e.target.value)}
@@ -152,7 +168,9 @@ function FeedbackModal({ isOpen, onClose, onSubmit, messageId, voteType }: Feedb
           )}
 
           <div>
-            <label className="block text-sm font-medium mb-2">Additional feedback (optional)</label>
+            <label className="block text-sm font-medium mb-2">
+              Additional feedback (optional)
+            </label>
             <textarea
               value={customFeedback}
               onChange={(e) => setCustomFeedback(e.target.value)}
@@ -198,7 +216,9 @@ export function PureEnhancedMessageActions({
   isLoading: boolean;
   onEdit?: () => void;
   messages: ChatMessage[];
-  setMessages: (messages: ChatMessage[] | ((prev: ChatMessage[]) => ChatMessage[])) => void;
+  setMessages: (
+    messages: ChatMessage[] | ((prev: ChatMessage[]) => ChatMessage[]),
+  ) => void;
   sendMessage: (message: { role: 'user'; parts: any[] }) => void;
   regenerate: () => void;
 }) {
@@ -271,7 +291,9 @@ export function PureEnhancedMessageActions({
       });
 
       if (response.ok) {
-        toast.success('Detailed feedback saved! This helps improve future responses.');
+        toast.success(
+          'Detailed feedback saved! This helps improve future responses.',
+        );
       } else {
         toast.error('Failed to save detailed feedback');
       }
@@ -283,7 +305,13 @@ export function PureEnhancedMessageActions({
 
   return (
     <>
-      <Actions className={message.role === 'user' ? 'opacity-0 group-hover:opacity-100 transition-opacity duration-200' : ''}>
+      <Actions
+        className={
+          message.role === 'user'
+            ? 'opacity-0 group-hover:opacity-100 transition-opacity duration-200'
+            : ''
+        }
+      >
         <Action
           tooltip="Copy"
           onClick={async () => {
@@ -310,36 +338,17 @@ export function PureEnhancedMessageActions({
             tooltip="Try Again"
             onClick={async () => {
               try {
-                console.log('[MessageActions] Starting regeneration for message:', message.id);
-                
-                const { deleteTrailingMessages } = await import('@/app/(chat)/actions');
-                
-                await deleteTrailingMessages({
-                  id: message.id,
-                });
-
-                setMessages((messages) => {
-                  const index = messages.findIndex((m) => m.id === message.id);
-                  
-                  if (index !== -1) {
-                    console.log('[MessageActions] Removing assistant message and messages after index:', index);
-                    const updatedMessages = [...messages.slice(0, index)];
-                    console.log('[MessageActions] Updated messages count:', updatedMessages.length);
-                    return updatedMessages;
-                  }
-                  
-                  console.log('[MessageActions] Message not found in current messages array');
-                  return messages;
-                });
-
-                setTimeout(() => {
-                  console.log('[MessageActions] Calling regenerate...');
-                  regenerate();
-                }, 100);
-                
+                console.log(
+                  '[MessageActions] Regenerate assistant message:',
+                  message.id,
+                );
+                await regenerate({ messageId: message.id });
                 toast.success('Regenerating response...');
               } catch (error) {
-                console.error('[MessageActions] Error regenerating message:', error);
+                console.error(
+                  '[MessageActions] Error regenerating message:',
+                  error,
+                );
                 toast.error('Failed to regenerate response');
               }
             }}
@@ -371,10 +380,7 @@ export function PureEnhancedMessageActions({
         )}
 
         {message.role === 'user' && onEdit && (
-          <Action
-            tooltip="Edit Message"
-            onClick={onEdit}
-          >
+          <Action tooltip="Edit Message" onClick={onEdit}>
             <PencilEditIcon />
           </Action>
         )}

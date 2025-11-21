@@ -60,6 +60,12 @@ function PureMultimodalInput({
   className?: string;
   selectedVisibilityType: VisibilityType;
 }) {
+  console.log(
+    '[MultimodalInput] status:',
+    status,
+    'showing button:',
+    status === 'submitted' ? 'STOP' : 'SEND',
+  );
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const { width } = useWindowSize();
 
@@ -105,7 +111,25 @@ function PureMultimodalInput({
   }, [input, setLocalStorageInput]);
 
   const handleInput = (event: React.ChangeEvent<HTMLTextAreaElement>) => {
-    setInput(event.target.value);
+    const value = event.target.value;
+    const MAX = 16000;
+    const WARN = 14000;
+    // If pasted huge text, keep first 200000 (schema upper bound) then trim user cap separately
+    let nextVal = value.slice(0, 200000);
+
+    if (nextVal.length > MAX) {
+      // Auto-trim hard overflow beyond MAX and notify once.
+      const trimmed = nextVal.slice(0, MAX);
+      if (nextVal.length !== trimmed.length) {
+        toast.error('Message trimmed to 16,000 characters limit.');
+      }
+      nextVal = trimmed;
+    } else if (nextVal.length > WARN) {
+      // Soft warning zone
+      toast.warning(`Approaching limit: ${nextVal.length}/${MAX}`);
+    }
+
+    setInput(nextVal);
   };
 
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -319,17 +343,39 @@ function PureMultimodalInput({
         <PromptInputToolbar className="px-2 py-1">
           <PromptInputTools className="gap-2">
             <AttachmentsButton fileInputRef={fileInputRef} status={status} />
+            {/* Live character counter */}
+            <div
+              className={`text-xs font-mono ${
+                input.length >= 16000
+                  ? 'text-red-600'
+                  : input.length >= 14000
+                    ? 'text-amber-500'
+                    : 'text-muted-foreground'
+              }`}
+            >
+              {input.length}/16000
+            </div>
           </PromptInputTools>
-          {status === 'submitted' ? (
-            <StopButton stop={stop} setMessages={setMessages} />
-          ) : (
-            <PromptInputSubmit
-              status={status}
-              disabled={!input.trim() || uploadQueue.length > 0}
-              className="bg-primary hover:bg-primary/90 text-primary-foreground size-8"
-              size="sm"
-            />
-          )}
+          {(() => {
+            console.log(
+              '[MultimodalInput] Rendering button, status === submitted?',
+              status === 'submitted',
+            );
+            return status === 'submitted' ? (
+              <StopButton stop={stop} setMessages={setMessages} />
+            ) : (
+              <PromptInputSubmit
+                disabled={
+                  !input.trim() ||
+                  uploadQueue.length > 0 ||
+                  input.length === 0 ||
+                  input.length > 16000
+                }
+                className="bg-primary hover:bg-primary/90 text-primary-foreground size-8"
+                size="sm"
+              />
+            );
+          })()}
         </PromptInputToolbar>
       </PromptInput>
     </div>

@@ -1,8 +1,12 @@
 import { z } from 'zod';
 
+// Text parts: we apply a base max for safety, but will allow
+// larger assistant/system parts by expanding the limit after role check.
+// Keep generous upper bound to avoid unbounded payload growth.
 const textPartSchema = z.object({
   type: z.enum(['text']),
-  text: z.string().min(1).max(16000),
+  // Set temporary high ceiling; user parts stricter via message-level refine.
+  text: z.string().min(1).max(200000),
 });
 
 const filePartSchema = z
@@ -37,12 +41,41 @@ const messageSchema = z
     role: z.enum(['user', 'system', 'assistant']),
     content: z.union([z.string(), z.array(partSchema)]).optional(),
     parts: z.array(partSchema).optional(),
-    id: z.string().optional(), // Allow optional id field
-    metadata: z.any().optional(), // Allow optional metadata
-    createdAt: z.string().optional(), // Allow createdAt field
+    id: z.string().optional(),
+    metadata: z.any().optional(),
+    createdAt: z.string().optional(),
   })
   .refine((data) => data.content || data.parts, {
     message: "Either 'content' or 'parts' must be provided",
+  })
+  // Enforce 16k limit only for USER text parts; assistant/system can be longer.
+  .superRefine((data, ctx) => {
+    const partsArray = Array.isArray(data.parts)
+      ? data.parts
+      : Array.isArray(data.content)
+        ? data.content
+        : typeof data.content === 'string'
+          ? [{ type: 'text', text: data.content }]
+          : [];
+    if (data.role === 'user') {
+      for (const p of partsArray) {
+        if (
+          p?.type === 'text' &&
+          typeof p.text === 'string' &&
+          p.text.length > 16000
+        ) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.too_big,
+            maximum: 16000,
+            type: 'string',
+            inclusive: true,
+            exact: false,
+            message: 'User text must be <= 16000 characters',
+            path: ['content', 0, 'text'],
+          });
+        }
+      }
+    }
   });
 
 export const postRequestBodySchema = z.object({

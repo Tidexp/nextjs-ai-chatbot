@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useWindowSize } from 'usehooks-ts';
-import { memo, useState, useEffect } from 'react';
+import { memo, useState, useEffect, useCallback } from 'react';
 
 import { ModelSelector } from '@/components/model-selector';
 import { SidebarToggle } from '@/components/sidebar-toggle';
@@ -45,6 +45,14 @@ function PureChatHeader({
     setEditTitle(title || '');
   }, [title]);
 
+  // Callback ref to focus and select text immediately when input mounts
+  const inputCallbackRef = useCallback((node: HTMLInputElement | null) => {
+    if (node) {
+      node.focus();
+      node.select();
+    }
+  }, []);
+
   const handleSaveTitle = async () => {
     if (editTitle.trim() && editTitle !== title) {
       try {
@@ -52,9 +60,11 @@ function PureChatHeader({
         toast.success('Chat title updated');
         setIsEditing(false);
         // Trigger a refresh of the chat list
-        window.dispatchEvent(new CustomEvent('chatTitleUpdated', { 
-          detail: { chatId, newTitle: editTitle.trim() } 
-        }));
+        window.dispatchEvent(
+          new CustomEvent('chatTitleUpdated', {
+            detail: { chatId, newTitle: editTitle.trim() },
+          }),
+        );
       } catch (error) {
         toast.error('Failed to update title');
         setEditTitle(title || '');
@@ -82,12 +92,12 @@ function PureChatHeader({
         <div className="flex-1 min-w-0 mx-2">
           {isEditing ? (
             <Input
+              ref={inputCallbackRef}
               value={editTitle}
               onChange={(e) => setEditTitle(e.target.value)}
               onBlur={handleSaveTitle}
               onKeyDown={handleKeyDown}
-              className="h-8 text-sm bg-transparent border-none p-0 focus-visible:ring-0 focus-visible:ring-offset-0"
-              autoFocus
+              className="h-8 text-sm px-2 py-1 bg-muted border-border"
             />
           ) : (
             <div className="flex items-center gap-2 group">
@@ -152,5 +162,8 @@ function PureChatHeader({
 }
 
 export const ChatHeader = memo(PureChatHeader, (prevProps, nextProps) => {
-  return prevProps.selectedModelId === nextProps.selectedModelId && prevProps.title === nextProps.title;
+  return (
+    prevProps.selectedModelId === nextProps.selectedModelId &&
+    prevProps.title === nextProps.title
+  );
 });
