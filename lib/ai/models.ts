@@ -27,4 +27,10 @@ export const chatModels: Array<ChatModel> = [
     name: 'Gemma 3 12B',
     description: 'Open source model for general use',
   },
+  {
+    id: 'codellama-7b-instruct',
+    name: 'Code Llama 7B Instruction',
+    description:
+      'Fine-tuned model for code generation and instruction following',
+  },
 ];

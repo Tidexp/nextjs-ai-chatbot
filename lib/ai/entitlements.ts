@@ -15,6 +15,7 @@ export const entitlementsByUserType: Record<UserType, Entitlements> = {
     availableChatModelIds: [
       'gemini-2.5-flash-lite',
       'gemma-3',
+      'codellama-7b-instruct',
     ],
   },
 
@@ -24,10 +25,11 @@ export const entitlementsByUserType: Record<UserType, Entitlements> = {
   regular: {
     maxMessagesPerDay: 100,
     availableChatModelIds: [
-      'gemini-2.5-pro',       // 👈 thêm Pro vô đây
+      'gemini-2.5-pro', // 👈 thêm Pro vô đây
       'gemini-2.5-flash',
       'gemini-2.5-flash-lite',
       'gemma-3',
+      'codellama-7b-instruct',
     ],
   },
 };

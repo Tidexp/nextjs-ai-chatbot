@@ -85,6 +85,7 @@ export function Chat({
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             chatId: id,
+            model: initialChatModel,
             messages: messagesToSend.map((msg) => ({
               id: msg.id,
               role: msg.role,
@@ -337,6 +338,16 @@ export function Chat({
       window.history.replaceState({}, '', `/chat/${id}`);
     }
   }, [query, sendMessage, hasAppendedQuery, id]);
+
+  // Cleanup on unmount - abort any pending requests
+  useEffect(() => {
+    return () => {
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+        abortControllerRef.current = null;
+      }
+    };
+  }, []);
 
   const hasAssistantMessage = messages.some(
     (m: ChatMessage) => m.role === 'assistant',

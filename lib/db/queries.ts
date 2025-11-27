@@ -1473,6 +1473,12 @@ export async function getLessonsByModuleId(
 // Get all modules/lessons for a topic
 export async function getModulesAndLessonsByTopicId(topicId: string) {
   const modules = await getModulesByTopicId(topicId);
+
+  // Return early if no modules
+  if (modules.length === 0) {
+    return [];
+  }
+
   const lessons = await db
     .select()
     .from(topicLesson)
@@ -1481,10 +1487,24 @@ export async function getModulesAndLessonsByTopicId(topicId: string) {
         topicLesson.moduleId,
         modules.map((m) => m.id),
       ),
-    );
+    )
+    .orderBy(asc(topicLesson.order));
+
+  // Group lessons by moduleId for efficient lookup
+  const lessonsByModule = lessons.reduce(
+    (acc, lesson) => {
+      if (!acc[lesson.moduleId]) {
+        acc[lesson.moduleId] = [];
+      }
+      acc[lesson.moduleId].push(lesson);
+      return acc;
+    },
+    {} as Record<string, typeof lessons>,
+  );
+
   return modules.map((mod) => ({
     ...mod,
-    lessons: lessons.filter((l) => l.moduleId === mod.id),
+    lessons: lessonsByModule[mod.id] || [],
   }));
 }
 

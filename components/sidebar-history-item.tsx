@@ -24,7 +24,7 @@ import {
   TrashIcon,
   PencilEditIcon,
 } from './icons';
-import { memo, useState, useEffect } from 'react';
+import { memo, useState, useEffect, useRef } from 'react';
 import { useChatVisibility } from '@/hooks/use-chat-visibility';
 import { Input } from './ui/input';
 import { updateChatTitle } from '@/app/(chat)/actions';
@@ -48,6 +48,13 @@ const PureChatItem = ({
 
   const [isEditing, setIsEditing] = useState(false);
   const [editTitle, setEditTitle] = useState(chat.title);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  useEffect(() => {
+    if (isEditing && inputRef.current) {
+      inputRef.current.focus();
+      inputRef.current.select();
+    }
+  }, [isEditing]);
 
   useEffect(() => {
     setEditTitle(chat.title);
@@ -96,12 +103,12 @@ const PureChatItem = ({
         <Link href={`/chat/${chat.id}`} onClick={() => setOpenMobile(false)}>
           {isEditing ? (
             <Input
+              ref={inputRef}
               value={editTitle}
               onChange={(e) => setEditTitle(e.target.value)}
               onBlur={handleSaveTitle}
               onKeyDown={handleKeyDown}
               className="h-6 text-sm bg-transparent border-none p-0 focus-visible:ring-0 focus-visible:ring-offset-0"
-              autoFocus
             />
           ) : (
             <span>{chat.title}</span>

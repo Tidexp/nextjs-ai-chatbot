@@ -7,6 +7,23 @@ import {
 import { getLessonById } from '@/lib/content/loader';
 import { auth } from '@/app/(auth)/auth';
 import LessonContent from './lesson-content';
+import { unstable_cache } from 'next/cache';
+
+// Force dynamic rendering to prevent build-time errors
+export const dynamic = 'force-dynamic';
+export const revalidate = 300;
+
+// Cache the modules and lessons data for 5 minutes
+const getCachedModulesAndLessons = unstable_cache(
+  async (topicId: string) => {
+    return await getModulesAndLessonsByTopicId(topicId);
+  },
+  ['modules-and-lessons'],
+  {
+    revalidate: 300, // 5 minutes
+    tags: ['topic-modules'],
+  },
+);
 
 export default async function LessonPage({
   params,
@@ -20,7 +37,7 @@ export default async function LessonPage({
   const topic = await getTopicBySlug(slug);
   if (!topic) return notFound();
 
-  const modulesAndLessons = await getModulesAndLessonsByTopicId(topic.id);
+  const modulesAndLessons = await getCachedModulesAndLessons(topic.id);
   const currentModule = modulesAndLessons.find((m) => m.id === moduleId);
   if (!currentModule) return notFound();
 

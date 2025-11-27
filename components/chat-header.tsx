@@ -6,7 +6,6 @@ import { useWindowSize } from 'usehooks-ts';
 import { memo, useState, useEffect, useCallback } from 'react';
 
 import { ModelSelector } from '@/components/model-selector';
-import { SidebarToggle } from '@/components/sidebar-toggle';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { PlusIcon, PencilEditIcon } from './icons';
@@ -33,7 +32,7 @@ function PureChatHeader({
   title?: string;
 }) {
   const router = useRouter();
-  const { open } = useSidebar();
+  const { open, state } = useSidebar();
 
   const { width: windowWidth } = useWindowSize();
 
@@ -84,10 +83,10 @@ function PureChatHeader({
     }
   };
 
+  const isCollapsed = state === 'collapsed';
+
   return (
     <header className="flex sticky top-0 bg-background py-1.5 items-center px-2 md:px-2 gap-2">
-      <SidebarToggle />
-
       {title && (
         <div className="flex-1 min-w-0 mx-2">
           {isEditing ? (
@@ -117,7 +116,7 @@ function PureChatHeader({
         </div>
       )}
 
-      {(!open || windowWidth < 768) && (
+      {(!open || windowWidth < 768) && !isCollapsed && (
         <Tooltip>
           <TooltipTrigger asChild>
             <Button
