@@ -3,6 +3,26 @@
 ## 📋 Yêu Cầu Hệ Thống
 
 - **Node.js**: phiên bản 18.x trở lên
+
+## ✨ Các Chức Năng Chính
+
+- **Chat thời gian thực (Streaming):** trả lời liên tục, mượt mà khi mô hình tạo văn bản.
+- **Chọn mô hình (Model Selector):** hỗ trợ nhiều mô hình AI
+  - Gemini 2.5 (Pro / Flash / Flash Lite)
+  - Gemma 3 12B
+  - Code Llama 7B Instruction (mô hình fine-tune tự host qua FastAPI)
+- **Artifacts / Code Editor:** hiển thị, chỉnh sửa, chạy và so sánh (diff) mã do AI sinh ra.
+- **Nhập đa phương tiện (Multimodal Input):** gửi văn bản, hình ảnh, PDF, và tệp văn bản để AI xử lý.
+- **Hệ thống Chủ đề/Học liệu (Topics):** duyệt chủ đề, module, lesson; kèm nút "Back to Topics" ở trang bài học.
+- **Lịch sử chat & đổi tên:** lưu lịch sử theo nhóm, cho phép đổi tên nhanh, auto-focus khi rename.
+- **Bỏ phiếu & phản hồi:** upvote/downvote và ghi nhận phản hồi để cải thiện câu trả lời.
+- **Analytics:** trang phân tích cơ bản cho phiên trò chuyện và tương tác.
+- **Thanh bên (Sidebar) thông minh:**
+  - Thu gọn thành thanh mảnh với logo + avatar khi collapse.
+  - Hover lên logo hiện nút mở rộng; nhấn nút để mở lại.
+  - Ẩn nút "New Chat" khi sidebar thu gọn.
+- **Bảo vệ điều hướng (Navigation Guard):** hạn chế spam chuyển trang liên tục.
+
 - **pnpm**: package manager (hoặc npm/yarn)
 - **PostgreSQL Database**: Neon hoặc bất kỳ PostgreSQL nào
 - **Gemini API Key**: từ Google AI Studio
