@@ -182,6 +182,7 @@ export async function POST(request: Request) {
       top_p,
       stream,
       stop,
+      chatType = 'general',
     } = requestBody;
 
     // Use default model if none provided
@@ -371,8 +372,9 @@ export async function POST(request: Request) {
       await saveChat({
         id: chatId,
         userId: session.user.id,
-        title: 'New Chat',
+        title: chatType === 'instructor' ? 'Instructor Chat' : 'New Chat',
         visibility: 'private',
+        chatType,
       });
     }
 
@@ -398,44 +400,76 @@ export async function POST(request: Request) {
       (msg) => msg.role !== 'system',
     );
 
+    // Log the system message for debugging
+    if (systemMessage) {
+      const systemText =
+        (systemMessage as any).parts?.[0]?.text || topicSystemPrompt;
+      console.log('[POST] System message extracted:');
+      console.log(systemText);
+      console.log('[POST] System message length:', systemText?.length);
+    }
+
+    const partsToText = (parts: any[]) => {
+      // Flatten text parts into a single string; ignore non-text for chat completion
+      const texts = parts
+        .filter((p) => p?.type === 'text' && typeof p.text === 'string')
+        .map((p) => p.text);
+      return texts.join('\n\n');
+    };
+
     const promptMessages = systemMessage
       ? [
           {
             role: 'system' as const,
-            content: [
-              {
-                type: 'text' as const,
-                text:
-                  (systemMessage as any).parts?.[0]?.text || topicSystemPrompt,
-              },
-            ],
+            content:
+              (systemMessage as any).parts?.[0]?.text || topicSystemPrompt,
           },
           ...nonSystemMessages.map((msg) => {
             const parts = (msg as any).parts || [];
+            const contentText = parts.length > 0 ? partsToText(parts) : '';
             return {
               role: msg.role as 'user' | 'assistant',
-              content: parts.length > 0 ? parts : [{ type: 'text', text: '' }],
+              content: contentText,
             };
           }),
         ]
       : nonSystemMessages.map((msg) => {
           const parts = (msg as any).parts || [];
+          const contentText = parts.length > 0 ? partsToText(parts) : '';
           return {
             role: msg.role as 'user' | 'assistant',
-            content: parts.length > 0 ? parts : [{ type: 'text', text: '' }],
+            content: contentText,
           };
         });
 
     // Standard Vercel AI SDK streamText() for proper SSE streaming
     // Use standard streamText() which works with useChat hook
     console.log('[POST] Starting streamText() for model:', selectedChatModel);
+    console.log('[POST] Prompt messages being sent to model:');
+    console.log(JSON.stringify(promptMessages, null, 2));
 
     const messageId = generateUUID();
 
-    const result = streamText({
+    // For instructor chat, use very low temperature (0.1) to force strict adherence to instructions
+    const isInstructorMode = chatType === 'instructor';
+    console.log('[POST] isInstructorMode:', isInstructorMode);
+    console.log(
+      '[POST] Setting temperature to:',
+      isInstructorMode ? 0.1 : 'undefined',
+    );
+
+    const streamOptions: any = {
       model: myProvider.languageModel(selectedChatModel as GeminiModelId),
       messages: promptMessages as any,
-    });
+      temperature: isInstructorMode ? 0.1 : undefined, // Very low temperature for strict fact extraction
+    };
+
+    console.log(
+      '[POST] Stream options:',
+      JSON.stringify(streamOptions, null, 2),
+    );
+
+    const result = streamText(streamOptions);
 
     console.log('[POST] Returning streaming response with text stream');
 

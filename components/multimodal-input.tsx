@@ -46,6 +46,7 @@ function PureMultimodalInput({
   sendMessage,
   className,
   selectedVisibilityType,
+  chatType = 'general',
 }: {
   chatId: string;
   input: string;
@@ -59,6 +60,7 @@ function PureMultimodalInput({
   sendMessage: UseChatHelpers<ChatMessage>['sendMessage'];
   className?: string;
   selectedVisibilityType: VisibilityType;
+  chatType?: 'general' | 'lesson' | 'instructor';
 }) {
   console.log(
     '[MultimodalInput] status:',
@@ -263,7 +265,8 @@ function PureMultimodalInput({
 
       {messages.length === 0 &&
         attachments.length === 0 &&
-        uploadQueue.length === 0 && (
+        uploadQueue.length === 0 &&
+        chatType === 'general' && (
           <SuggestedActions
             sendMessage={sendMessage}
             chatId={chatId}

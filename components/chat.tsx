@@ -366,7 +366,7 @@ export function Chat({
       <div
         className={
           compact
-            ? 'flex flex-col min-w-0 h-dvh bg-background'
+            ? 'flex flex-col min-w-0 h-full bg-background'
             : 'flex flex-col min-w-0 h-dvh bg-background'
         }
       >

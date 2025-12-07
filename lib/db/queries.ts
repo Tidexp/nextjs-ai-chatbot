@@ -246,6 +246,7 @@ export async function saveChat({
   userId,
   title,
   visibility,
+  chatType,
   lessonId,
   topicId,
   moduleId,
@@ -254,6 +255,7 @@ export async function saveChat({
   userId: string;
   title: string;
   visibility: VisibilityType;
+  chatType?: 'general' | 'lesson' | 'instructor';
   lessonId?: string;
   topicId?: string;
   moduleId?: string;
@@ -270,7 +272,21 @@ export async function saveChat({
       throw new ChatSDKError('bad_request:database', 'User not found');
     }
 
-    console.log('Creating chat for user:', userId, 'with title:', title);
+    console.log(
+      'Creating chat for user:',
+      userId,
+      'with title:',
+      title,
+      'type:',
+      chatType,
+    );
+
+    // Automatically determine chat type if not provided
+    let determinedChatType = chatType || 'general';
+    if (!chatType && lessonId) {
+      determinedChatType = 'lesson';
+    }
+
     return await db
       .insert(chat)
       .values({
@@ -279,6 +295,7 @@ export async function saveChat({
         userId,
         title,
         visibility,
+        chatType: determinedChatType,
         ...(lessonId ? { lessonId } : {}),
         ...(topicId ? { topicId } : {}),
         ...(moduleId ? { moduleId } : {}),

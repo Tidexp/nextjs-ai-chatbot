@@ -340,6 +340,11 @@ async function convertToGoogleFormat(
 // ----- Stream function (UPDATED) -----
 async function streamGemini(model: string, options: any) {
   console.log(`[streamGemini] Called with model: ${model}`);
+  console.log(
+    `[streamGemini] Received options:`,
+    JSON.stringify(options, null, 2),
+  );
+  console.log(`[streamGemini] Temperature in options:`, options.temperature);
 
   try {
     const messages = options.prompt || options.messages || [];

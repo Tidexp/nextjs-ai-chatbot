@@ -28,6 +28,13 @@ export const user = pgTable('User', {
 
 export type User = InferSelectModel<typeof user>;
 
+// Define chat type enum
+export const chatTypeEnum = pgEnum('chat_type', [
+  'general',
+  'lesson',
+  'instructor',
+]);
+
 export const chat = pgTable(
   'Chat',
   {
@@ -40,6 +47,7 @@ export const chat = pgTable(
     visibility: varchar('visibility', { enum: ['public', 'private'] })
       .notNull()
       .default('private'),
+    chatType: chatTypeEnum('chat_type').notNull().default('general'), // distinguish chat types
     lessonId: uuid('lessonId').references(() => topicLesson.id), // nullable, for lesson chats
     topicId: uuid('topicId').references(() => topic.id), // nullable, associate chat to a topic
     moduleId: uuid('moduleId').references(() => topicModule.id), // nullable, associate chat to a module
@@ -449,3 +457,45 @@ export const topicLesson = pgTable('TopicLesson', {
 });
 
 export type TopicLesson = InferSelectModel<typeof topicLesson>;
+
+// Instructor sources for teaching materials
+export const sourceTypeEnum = pgEnum('source_type', [
+  'markdown',
+  'code',
+  'pdf',
+  'image',
+]);
+
+export const instructorSource = pgTable('InstructorSource', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  userId: uuid('userId')
+    .notNull()
+    .references(() => user.id, { onDelete: 'cascade' }),
+  title: varchar('title', { length: 255 }).notNull(),
+  type: varchar('type', { length: 32 }).notNull(),
+  excerpt: text('excerpt'),
+  content: text('content'),
+  sourceUrl: text('sourceUrl'),
+  metadata: json('metadata'),
+  createdAt: timestamp('createdAt').notNull().defaultNow(),
+  updatedAt: timestamp('updatedAt').notNull().defaultNow(),
+});
+
+export type InstructorSource = InferSelectModel<typeof instructorSource>;
+
+// Document chunks for RAG (vector storage)
+export const documentChunk = pgTable('DocumentChunk', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  sourceId: uuid('sourceId')
+    .notNull()
+    .references(() => instructorSource.id, { onDelete: 'cascade' }),
+  chunkIndex: integer('chunkIndex').notNull(),
+  content: text('content').notNull(),
+  // Using a simple JSON array to store embedding (pgvector not always available)
+  embedding: text('embedding').notNull(), // JSON stringified array
+  tokenCount: integer('tokenCount').notNull(),
+  metadata: json('metadata'), // page number, section, etc.
+  createdAt: timestamp('createdAt').notNull().defaultNow(),
+});
+
+export type DocumentChunk = InferSelectModel<typeof documentChunk>;

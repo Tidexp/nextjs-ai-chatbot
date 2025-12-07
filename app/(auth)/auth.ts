@@ -1,10 +1,13 @@
 import { compare } from 'bcrypt-ts';
 import NextAuth, { type DefaultSession } from 'next-auth';
 import Credentials from 'next-auth/providers/credentials';
+import Google from 'next-auth/providers/google';
 import { createGuestUser, getUser } from '@/lib/db/queries';
 import { authConfig } from './auth.config';
 import { DUMMY_PASSWORD } from '@/lib/constants';
 import type { DefaultJWT } from 'next-auth/jwt';
+import { createUser } from '@/lib/db/queries';
+import { randomUUID } from 'node:crypto';
 
 export type UserType = 'guest' | 'regular';
 
@@ -14,6 +17,7 @@ declare module 'next-auth' {
       id: string;
       type: UserType;
     } & DefaultSession['user'];
+    accessToken?: string;
   }
 
   interface User {
@@ -27,6 +31,7 @@ declare module 'next-auth/jwt' {
   interface JWT extends DefaultJWT {
     id: string;
     type: UserType;
+    accessToken?: string;
   }
 }
 
@@ -38,6 +43,20 @@ export const {
 } = NextAuth({
   ...authConfig,
   providers: [
+    Google({
+      // biome-ignore lint/style/noNonNullAssertion: <explanation>
+      clientId: process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID!,
+      // biome-ignore lint/style/noNonNullAssertion: <explanation>
+      clientSecret: process.env.GOOGLE_CLIENT_SECRET!,
+      authorization: {
+        params: {
+          scope:
+            'openid email profile https://www.googleapis.com/auth/drive.file',
+          access_type: 'offline',
+          prompt: 'consent',
+        },
+      },
+    }),
     Credentials({
       credentials: {},
       async authorize({ email, password }: any) {
@@ -74,22 +93,81 @@ export const {
     }),
   ],
   callbacks: {
-    async jwt({ token, user }) {
-      if (user) {
-        console.log('🔍 JWT callback - user:', user);
+    async signIn({ user, account, profile }) {
+      // Auto-create user for Google OAuth if they don't exist
+      if (account?.provider === 'google' && profile?.email) {
+        console.log('🔍 SignIn callback - checking user:', profile.email);
+        const existingUsers = await getUser(profile.email);
+        if (existingUsers.length === 0) {
+          console.log('👤 Creating new user for Google OAuth:', profile.email);
+          // Create user with a random password since they'll use OAuth
+          const randomPassword = randomUUID();
+          await createUser(
+            profile.email,
+            randomPassword,
+            profile.name || profile.email,
+          );
+          console.log('✅ User created successfully');
+        } else {
+          console.log('✅ User already exists:', existingUsers[0].id);
+        }
+      }
+      return true;
+    },
+    async jwt({ token, user, account, profile }) {
+      // For Google OAuth sign-in, always fetch from database to get our DB user ID
+      if (account?.provider === 'google' && profile?.email) {
+        console.log(
+          '🔍 JWT callback - Google OAuth, fetching user:',
+          profile.email,
+        );
+        const existingUsers = await getUser(profile.email);
+        if (existingUsers.length > 0) {
+          console.log(
+            '✅ JWT callback - Found user in DB:',
+            existingUsers[0].id,
+          );
+          token.id = existingUsers[0].id;
+          token.type = existingUsers[0].type || 'regular';
+        } else {
+          console.error(
+            '❌ JWT callback - User not found in DB after signIn:',
+            profile.email,
+          );
+        }
+        token.accessToken = account.access_token;
+      }
+      // For credentials login (email/password or guest)
+      else if (user) {
+        console.log('🔍 JWT callback - credentials user:', user);
         token.id = user.id as string;
-        token.type = user.type;
-        console.log('✅ JWT callback - token updated:', { id: token.id, type: token.type });
+        token.type = user.type || 'regular';
+        console.log('✅ JWT callback - token updated:', {
+          id: token.id,
+          type: token.type,
+        });
+      }
+
+      // Ensure type is always set
+      if (!token.type) {
+        token.type = 'regular';
       }
 
       return token;
     },
     async session({ session, token }) {
       if (session.user) {
-        console.log('🔍 Session callback - token:', { id: token.id, type: token.type });
+        console.log('🔍 Session callback - token:', {
+          id: token.id,
+          type: token.type,
+        });
         session.user.id = token.id;
-        session.user.type = token.type;
-        console.log('✅ Session callback - session updated:', { id: session.user.id, type: session.user.type });
+        session.user.type = (token.type || 'regular') as UserType;
+        session.accessToken = token.accessToken;
+        console.log('✅ Session callback - session updated:', {
+          id: session.user.id,
+          type: session.user.type,
+        });
       }
 
       return session;

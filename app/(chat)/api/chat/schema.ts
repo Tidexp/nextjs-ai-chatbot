@@ -89,6 +89,7 @@ export const postRequestBodySchema = z.object({
   stream: z.boolean().default(true),
   stop: z.union([z.string(), z.array(z.string()), z.null()]).optional(),
   trigger: z.string().optional(), // Trigger field from AI SDK
+  chatType: z.enum(['general', 'lesson', 'instructor']).optional(), // Chat type
 });
 
 export type PostRequestBody = z.infer<typeof postRequestBodySchema>;
