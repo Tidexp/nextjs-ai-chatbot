@@ -1,6 +1,7 @@
 'use client';
 
 import React from 'react';
+import { toast } from 'sonner';
 import { useInstructorMode } from '@/hooks/use-instructor-mode';
 import { Button } from '@/components/ui/button';
 import { useSession } from 'next-auth/react';
@@ -10,6 +11,8 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip';
 import { SidebarLeftIcon } from '@/components/icons';
+import { generateUUID } from '@/lib/utils';
+import type { ChatMessage } from '@/lib/types';
 
 // Google API configuration
 const GOOGLE_CLIENT_ID = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID || '';
@@ -38,6 +41,14 @@ interface SourceItemWithContent extends SourceItem {
   content?: string;
   sourceUrl?: string;
   metadata?: any;
+}
+
+interface InstructorNote {
+  id: string;
+  messageId?: string;
+  content: string;
+  createdAt: string;
+  title: string;
 }
 
 // API helper functions for database operations
@@ -127,7 +138,11 @@ const deleteSourceFromAPI = async (sourceId: string) => {
 
 import { InstructorChat } from './instructor-chat';
 
-export function InstructorPanel() {
+export function InstructorPanel({
+  chatId,
+}: {
+  chatId?: string;
+}) {
   const { setActive } = useInstructorMode();
   const { data: session } = useSession();
   const [sources, setSources] = React.useState<SourceItemWithContent[]>([]);
@@ -140,6 +155,15 @@ export function InstructorPanel() {
   const [isResizingStudio, setIsResizingStudio] = React.useState(false);
   const [dragStartX, setDragStartX] = React.useState(0);
   const [dragStartWidth, setDragStartWidth] = React.useState(0);
+  const [notes, setNotes] = React.useState<InstructorNote[]>([]);
+  const [notesLoading, setNotesLoading] = React.useState(false);
+  const [selectedNote, setSelectedNote] = React.useState<InstructorNote | null>(
+    null,
+  );
+  const instructorChatId = React.useMemo(
+    () => chatId || generateUUID(),
+    [chatId],
+  );
   const fileInputRef = React.useRef<HTMLInputElement | null>(null);
   const [isGoogleApiLoaded, setIsGoogleApiLoaded] = React.useState(false);
   const [showAddSourceModal, setShowAddSourceModal] = React.useState(false);
@@ -259,6 +283,103 @@ export function InstructorPanel() {
       setUrlLoading(false);
     }
   };
+
+  const deriveTitle = (content: string) => {
+    const firstLine =
+      content.split('\n').find((line) => line.trim()) || content;
+    return firstLine.trim().slice(0, 120) || 'Saved note';
+  };
+
+  const loadNotes = React.useCallback(async () => {
+    setNotesLoading(true);
+    try {
+      const res = await fetch(
+        `/api/instructor-notes?chatId=${instructorChatId}`,
+      );
+      if (res.status === 404) {
+        setNotes([]);
+        return;
+      }
+      if (!res.ok) throw new Error('Failed to load notes');
+      const data = await res.json();
+      setNotes(data.notes || []);
+    } catch (error) {
+      console.error('Failed to load notes', error);
+      toast.error('Could not load notes');
+    } finally {
+      setNotesLoading(false);
+    }
+  }, [instructorChatId]);
+
+  React.useEffect(() => {
+    loadNotes();
+  }, [loadNotes]);
+
+  const handleStoreNote = React.useCallback(
+    async (message: ChatMessage) => {
+      const textFromParts =
+        message.parts
+          ?.filter((part: any) => part.type === 'text' && part.text?.trim())
+          .map((part: any) => part.text.trim())
+          .join('\n')
+          .trim() || '';
+
+      if (!textFromParts) {
+        toast.error('No text found to save as a note.');
+        return;
+      }
+
+      try {
+        const payload = {
+          chatId: instructorChatId,
+          title: deriveTitle(textFromParts),
+          content: textFromParts,
+        };
+        const res = await fetch('/api/instructor-notes', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        if (!res.ok) throw new Error('Failed to save note');
+        const data = await res.json();
+        setNotes((prev) => [data.note, ...prev]);
+        toast.success('Saved to Studio notes.');
+      } catch (error) {
+        console.error('Failed to save note', error);
+        toast.error('Failed to save note.');
+      }
+    },
+    [deriveTitle, instructorChatId],
+  );
+
+  const handleRemoveNote = React.useCallback(
+    async (noteId: string) => {
+      try {
+        const res = await fetch(
+          `/api/instructor-notes?id=${noteId}&chatId=${instructorChatId}`,
+          {
+            method: 'DELETE',
+          },
+        );
+        if (!res.ok) throw new Error('Failed to remove note');
+        setNotes((prev) => prev.filter((note) => note.id !== noteId));
+      } catch (error) {
+        console.error('Failed to remove note', error);
+        toast.error('Failed to remove note.');
+      }
+    },
+    [instructorChatId],
+  );
+
+  const handleCopyNote = React.useCallback(async (note: InstructorNote) => {
+    try {
+      await navigator.clipboard.writeText(note.content);
+      toast.success('Copied note to clipboard.');
+    } catch (error) {
+      console.error('Failed to copy note', error);
+      toast.error('Failed to copy note.');
+    }
+  }, []);
 
   function detectType(file: File): SourceItem['type'] {
     const mt = file.type;
@@ -816,7 +937,13 @@ export function InstructorPanel() {
     <div className="flex flex-col h-dvh w-full overflow-hidden bg-background">
       <div className="flex items-center justify-between px-4 py-3 border-b">
         <h1 className="text-lg font-semibold">Instructor Mode</h1>
-        <Button variant="outline" onClick={() => setActive(false)}>
+        <Button
+          variant="outline"
+          onClick={() => {
+            setActive(false);
+            window.location.href = '/';
+          }}
+        >
           Exit
         </Button>
       </div>
@@ -1385,6 +1512,8 @@ export function InstructorPanel() {
               <InstructorChat
                 sources={sources}
                 enabledSourceIds={enabledSources}
+                chatId={instructorChatId}
+                onStoreNote={handleStoreNote}
               />
             </div>
           </div>
@@ -1434,233 +1563,139 @@ export function InstructorPanel() {
                 Studio
               </h2>
             </div>
+            <div className="space-y-3">
+              <div className="rounded-md border p-3 space-y-3">
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <h3 className="text-xs font-semibold uppercase text-muted-foreground">
+                      Saved Notes
+                    </h3>
+                    <p className="text-xs text-muted-foreground">
+                      Pin responses from chat and review them here.
+                    </p>
+                  </div>
+                  <span className="text-[11px] px-2 py-1 rounded-full bg-muted text-muted-foreground">
+                    {notes.length} saved
+                  </span>
+                </div>
 
-            {/* Assessment Tools */}
-            <div className="rounded-md border p-3 space-y-2">
-              <h3 className="text-xs font-semibold uppercase text-muted-foreground">
-                Assessment
-              </h3>
-              <div className="flex flex-col gap-1.5">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="w-full justify-start text-xs"
-                >
-                  📝 Multiple Choice Test
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="w-full justify-start text-xs"
-                >
-                  ❓ Generate Quiz
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="w-full justify-start text-xs"
-                >
-                  💡 Practice Problems
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="w-full justify-start text-xs"
-                >
-                  🎯 True/False Questions
-                </Button>
+                {notesLoading ? (
+                  <div className="rounded-md border border-dashed p-3 text-sm text-muted-foreground bg-muted/30">
+                    Loading notes...
+                  </div>
+                ) : notes.length === 0 ? (
+                  <div className="rounded-md border border-dashed p-3 text-sm text-muted-foreground bg-muted/30">
+                    No notes yet. Use "Store note" under a response to pin it
+                    here.
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {notes.map((note) => (
+                      <div
+                        key={note.id}
+                        role="button"
+                        tabIndex={0}
+                        className="w-full text-left rounded-lg border p-3 bg-muted/40 space-y-2 cursor-pointer hover:bg-muted/60 transition-colors focus:outline-none focus:ring-2 focus:ring-primary"
+                        onClick={() => setSelectedNote(note)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            setSelectedNote(note);
+                          }
+                        }}
+                        aria-label={`View note: ${note.title}`}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="flex flex-col gap-1 min-w-0">
+                            <span className="text-sm font-medium truncate">
+                              {note.title}
+                            </span>
+                            <span className="text-[11px] text-muted-foreground">
+                              {new Date(note.createdAt).toLocaleString(
+                                undefined,
+                                {
+                                  hour: '2-digit',
+                                  minute: '2-digit',
+                                  month: 'short',
+                                  day: 'numeric',
+                                },
+                              )}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-1">
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-7 px-2 text-xs"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleCopyNote(note);
+                              }}
+                            >
+                              Copy
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-7 px-2 text-xs text-destructive"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleRemoveNote(note.id);
+                              }}
+                            >
+                              Remove
+                            </Button>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
-            </div>
 
-            {/* Learning Aids */}
-            <div className="rounded-md border p-3 space-y-2">
-              <h3 className="text-xs font-semibold uppercase text-muted-foreground">
-                Learning Aids
-              </h3>
-              <div className="flex flex-col gap-1.5">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="w-full justify-start text-xs"
-                >
-                  📚 Learning Guide
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="w-full justify-start text-xs"
-                >
-                  🃏 Create Flashcards
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="w-full justify-start text-xs"
-                >
-                  🧠 Mind Map
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="w-full justify-start text-xs"
-                >
-                  📊 Concept Tree
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="w-full justify-start text-xs"
-                >
-                  🔗 Key Connections
-                </Button>
-              </div>
-            </div>
-
-            {/* Content Analysis */}
-            <div className="rounded-md border p-3 space-y-2">
-              <h3 className="text-xs font-semibold uppercase text-muted-foreground">
-                Analysis
-              </h3>
-              <div className="flex flex-col gap-1.5">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="w-full justify-start text-xs"
-                >
-                  📖 Summarize Content
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="w-full justify-start text-xs"
-                >
-                  🎓 Extract Key Concepts
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="w-full justify-start text-xs"
-                >
-                  🔍 Find References
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="w-full justify-start text-xs"
-                >
-                  📚 Related Resources
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="w-full justify-start text-xs"
-                >
-                  ⚠️ Common Misconceptions
-                </Button>
-              </div>
-            </div>
-
-            {/* Explanation Tools */}
-            <div className="rounded-md border p-3 space-y-2">
-              <h3 className="text-xs font-semibold uppercase text-muted-foreground">
-                Explain
-              </h3>
-              <div className="flex flex-col gap-1.5">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="w-full justify-start text-xs"
-                >
-                  💭 Explain with Analogy
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="w-full justify-start text-xs"
-                >
-                  👶 Simplify (ELI5)
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="w-full justify-start text-xs"
-                >
-                  🔬 Deep Dive
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="w-full justify-start text-xs"
-                >
-                  📝 Step-by-Step Guide
-                </Button>
-              </div>
-            </div>
-
-            {/* Code & Practice */}
-            <div className="rounded-md border p-3 space-y-2">
-              <h3 className="text-xs font-semibold uppercase text-muted-foreground">
-                Code Tools
-              </h3>
-              <div className="flex flex-col gap-1.5">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="w-full justify-start text-xs"
-                >
-                  🔧 Refactor Code
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="w-full justify-start text-xs"
-                >
-                  🐛 Debug Strategies
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="w-full justify-start text-xs"
-                >
-                  ⚡ Optimization Tips
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="w-full justify-start text-xs"
-                >
-                  📦 Code Examples
-                </Button>
-              </div>
-            </div>
-
-            {/* Export & Share */}
-            <div className="rounded-md border p-3 space-y-2">
-              <h3 className="text-xs font-semibold uppercase text-muted-foreground">
-                Export
-              </h3>
-              <div className="flex flex-col gap-1.5">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="w-full justify-start text-xs"
-                >
-                  � Export as PDF
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="w-full justify-start text-xs"
-                >
-                  📋 Copy Study Guide
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="w-full justify-start text-xs"
-                >
-                  � Share Session
-                </Button>
+              <div className="rounded-md border p-3 space-y-2">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h3 className="text-xs font-semibold uppercase text-muted-foreground">
+                      Quick Actions
+                    </h3>
+                    <p className="text-xs text-muted-foreground">
+                      Finish a lesson faster with one-click helpers.
+                    </p>
+                  </div>
+                  <span className="text-[11px] text-muted-foreground">
+                    Shortcuts
+                  </span>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="w-full justify-start text-xs"
+                  >
+                    📌 Summarize newest note
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="w-full justify-start text-xs"
+                  >
+                    📤 Export notes
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="w-full justify-start text-xs"
+                  >
+                    🧭 Next learning step
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="w-full justify-start text-xs"
+                  >
+                    ✅ Create checklist
+                  </Button>
+                </div>
               </div>
             </div>
           </section>
@@ -1683,6 +1718,55 @@ export function InstructorPanel() {
           </div>
         )}
       </div>
+
+      {/* Note View Modal */}
+      {selectedNote && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-background rounded-lg shadow-lg max-w-3xl w-full max-h-[80vh] flex flex-col">
+            <div className="flex items-center justify-between p-4 border-b">
+              <h2 className="text-lg font-semibold truncate pr-4">
+                {selectedNote.title}
+              </h2>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => setSelectedNote(null)}
+              >
+                ✕
+              </Button>
+            </div>
+            <div className="flex-1 overflow-auto p-4">
+              <pre className="whitespace-pre-wrap text-sm font-mono">
+                {selectedNote.content}
+              </pre>
+            </div>
+            <div className="flex items-center justify-between p-4 border-t bg-muted/30">
+              <span className="text-xs text-muted-foreground">
+                {new Date(selectedNote.createdAt).toLocaleString()}
+              </span>
+              <div className="flex gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    handleCopyNote(selectedNote);
+                    setSelectedNote(null);
+                  }}
+                >
+                  Copy
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setSelectedNote(null)}
+                >
+                  Close
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

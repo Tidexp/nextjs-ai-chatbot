@@ -28,6 +28,12 @@ function FeedbackModal({
   messageId,
   voteType,
 }: FeedbackModalProps) {
+  const qualityId = `${messageId}-quality`;
+  const helpfulnessId = `${messageId}-helpfulness`;
+  const accuracyId = `${messageId}-accuracy`;
+  const clarityId = `${messageId}-clarity`;
+  const downvoteReasonId = `${messageId}-downvote-reason`;
+  const customFeedbackId = `${messageId}-custom-feedback`;
   const [qualityScore, setQualityScore] = useState<number>(5);
   const [helpfulnessScore, setHelpfulnessScore] = useState<number>(5);
   const [accuracyScore, setAccuracyScore] = useState<number>(5);
@@ -58,10 +64,14 @@ function FeedbackModal({
 
         <div className="space-y-4">
           <div>
-            <label className="block text-sm font-medium mb-2">
+            <label
+              className="block text-sm font-medium mb-2"
+              htmlFor={qualityId}
+            >
               Overall Quality (1-10)
             </label>
             <input
+              id={qualityId}
               type="range"
               min="1"
               max="10"
@@ -80,10 +90,14 @@ function FeedbackModal({
           </div>
 
           <div>
-            <label className="block text-sm font-medium mb-2">
+            <label
+              className="block text-sm font-medium mb-2"
+              htmlFor={helpfulnessId}
+            >
               Helpfulness (1-10)
             </label>
             <input
+              id={helpfulnessId}
               type="range"
               min="1"
               max="10"
@@ -102,10 +116,14 @@ function FeedbackModal({
           </div>
 
           <div>
-            <label className="block text-sm font-medium mb-2">
+            <label
+              className="block text-sm font-medium mb-2"
+              htmlFor={accuracyId}
+            >
               Accuracy (1-10)
             </label>
             <input
+              id={accuracyId}
               type="range"
               min="1"
               max="10"
@@ -124,10 +142,14 @@ function FeedbackModal({
           </div>
 
           <div>
-            <label className="block text-sm font-medium mb-2">
+            <label
+              className="block text-sm font-medium mb-2"
+              htmlFor={clarityId}
+            >
               Clarity (1-10)
             </label>
             <input
+              id={clarityId}
               type="range"
               min="1"
               max="10"
@@ -147,10 +169,14 @@ function FeedbackModal({
 
           {voteType === 'down' && (
             <div>
-              <label className="block text-sm font-medium mb-2">
+              <label
+                className="block text-sm font-medium mb-2"
+                htmlFor={downvoteReasonId}
+              >
                 Why was this response not helpful?
               </label>
               <select
+                id={downvoteReasonId}
                 value={downvoteReason}
                 onChange={(e) => setDownvoteReason(e.target.value)}
                 className="w-full p-2 border rounded"
@@ -168,10 +194,14 @@ function FeedbackModal({
           )}
 
           <div>
-            <label className="block text-sm font-medium mb-2">
+            <label
+              className="block text-sm font-medium mb-2"
+              htmlFor={customFeedbackId}
+            >
               Additional feedback (optional)
             </label>
             <textarea
+              id={customFeedbackId}
               value={customFeedback}
               onChange={(e) => setCustomFeedback(e.target.value)}
               placeholder="Any additional thoughts..."
@@ -182,12 +212,14 @@ function FeedbackModal({
 
         <div className="flex gap-2 mt-6">
           <button
+            type="button"
             onClick={onClose}
             className="flex-1 px-4 py-2 border rounded hover:bg-gray-50 dark:hover:bg-gray-700"
           >
             Cancel
           </button>
           <button
+            type="button"
             onClick={handleSubmit}
             className="flex-1 px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
           >
@@ -209,6 +241,7 @@ export function PureEnhancedMessageActions({
   setMessages,
   sendMessage,
   regenerate,
+  onStoreNote,
 }: {
   chatId: string;
   message: ChatMessage;
@@ -221,6 +254,7 @@ export function PureEnhancedMessageActions({
   ) => void;
   sendMessage: (message: { role: 'user'; parts: any[] }) => void;
   regenerate: () => void;
+  onStoreNote?: (message: ChatMessage) => void;
 }) {
   const [_, copyToClipboard] = useCopyToClipboard();
   const { mutate } = useSWRConfig();
@@ -342,7 +376,7 @@ export function PureEnhancedMessageActions({
                   '[MessageActions] Regenerate assistant message:',
                   message.id,
                 );
-                await regenerate({ messageId: message.id });
+                await regenerate();
                 toast.success('Regenerating response...');
               } catch (error) {
                 console.error(
@@ -376,6 +410,12 @@ export function PureEnhancedMessageActions({
             onClick={() => handleVote('down')}
           >
             <ThumbDownIcon />
+          </Action>
+        )}
+
+        {message.role === 'assistant' && onStoreNote && (
+          <Action tooltip="Store note" onClick={() => onStoreNote(message)}>
+            🗒️
           </Action>
         )}
 

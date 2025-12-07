@@ -1,13 +1,16 @@
 import { PreviewMessage, ThinkingMessage } from './message';
 import { Greeting } from './greeting';
-import { memo } from 'react';
 import type { Vote } from '@/lib/db/schema';
 import type { UseChatHelpers } from '@ai-sdk/react';
 import { motion } from 'framer-motion';
 import { useMessages } from '@/hooks/use-messages';
 import type { ChatMessage } from '@/lib/types';
 import { useDataStream } from './data-stream-provider';
-import { Conversation, ConversationContent, ConversationScrollButton } from './elements/conversation';
+import {
+  Conversation,
+  ConversationContent,
+  ConversationScrollButton,
+} from './elements/conversation';
 
 interface MessagesProps {
   chatId: string;
@@ -19,6 +22,7 @@ interface MessagesProps {
   isReadonly: boolean;
   isArtifactVisible: boolean;
   sendMessage: UseChatHelpers<ChatMessage>['sendMessage'];
+  onStoreNote?: (message: ChatMessage) => void;
 }
 
 function PureMessages({
@@ -30,6 +34,7 @@ function PureMessages({
   regenerate,
   isReadonly,
   sendMessage,
+  onStoreNote,
 }: MessagesProps) {
   const {
     containerRef: messagesContainerRef,
@@ -52,34 +57,41 @@ function PureMessages({
 
           {messages.map((message, index) => {
             // Create a stable key that doesn't change on re-renders
-            const messageKey = message.id ? `${message.id}-${index}` : `temp-message-${index}`;
-            
+            const messageKey = message.id
+              ? `${message.id}-${index}`
+              : `temp-message-${index}`;
+
             return (
-            <PreviewMessage
-              key={messageKey}
-              chatId={chatId}
-              message={message}
-              isLoading={status === 'streaming' && messages.length - 1 === index}
-              vote={
-                votes
-                  ? votes.find((vote) => vote.messageId === message.id)
-                  : undefined
-              }
-              setMessages={setMessages}
-              regenerate={regenerate}
-              isReadonly={isReadonly}
-              requiresScrollPadding={
-                hasSentMessage && index === messages.length - 1
-              }
-              messages={messages}
-              sendMessage={sendMessage}
-            />
+              <PreviewMessage
+                key={messageKey}
+                chatId={chatId}
+                message={message}
+                isLoading={
+                  status === 'streaming' && messages.length - 1 === index
+                }
+                vote={
+                  votes
+                    ? votes.find((vote) => vote.messageId === message.id)
+                    : undefined
+                }
+                setMessages={setMessages}
+                regenerate={regenerate}
+                isReadonly={isReadonly}
+                requiresScrollPadding={
+                  hasSentMessage && index === messages.length - 1
+                }
+                messages={messages}
+                sendMessage={sendMessage}
+                onStoreNote={onStoreNote}
+              />
             );
           })}
 
           {status === 'submitted' &&
             messages.length > 0 &&
-            messages[messages.length - 1].role === 'user' && <ThinkingMessage />}
+            messages[messages.length - 1].role === 'user' && (
+              <ThinkingMessage />
+            )}
 
           <motion.div
             ref={messagesEndRef}

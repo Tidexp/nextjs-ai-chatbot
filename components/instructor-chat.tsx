@@ -1,10 +1,11 @@
 'use client';
 
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { useSession } from 'next-auth/react';
 import type { ChatStatus } from 'ai';
 
 import { chatModels, DEFAULT_CHAT_MODEL } from '@/lib/ai/models';
+import { instructorSystemPrompt } from '@/lib/ai/prompts';
 import type { Attachment, ChatMessage } from '@/lib/types';
 import { generateUUID } from '@/lib/utils';
 import { Messages } from './messages';
@@ -13,11 +14,15 @@ import { MultimodalInput } from './multimodal-input';
 interface InstructorChatProps {
   sources: Array<{ id: string; title: string; type: string; excerpt: string }>;
   enabledSourceIds: Set<string>;
+  onStoreNote?: (message: ChatMessage) => void;
+  chatId: string;
 }
 
 export function InstructorChat({
   sources,
   enabledSourceIds,
+  onStoreNote,
+  chatId,
 }: InstructorChatProps) {
   const { data: session } = useSession();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -28,8 +33,6 @@ export function InstructorChat({
   const [input, setInput] = useState('');
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const abortControllerRef = useRef<AbortController | null>(null);
-
-  const instructorChatId = useMemo(() => generateUUID(), []);
 
   const sendMessage = useCallback(
     async (message: any) => {
@@ -58,8 +61,12 @@ export function InstructorChat({
         );
 
         let systemContext =
-          'You are an AI instructor assistant helping with educational content.';
+          'You are a friendly, encouraging instructor in an interactive learning environment. Help students learn effectively with clear explanations and actionable guidance.';
         let formattedContext = '';
+        // Fallback summary if RAG fails or returns no chunks
+        const fallbackSourceSummary = enabledSources
+          .map((s, i) => `${i + 1}. ${s.title} — ${s.excerpt || ''}`)
+          .join('\n');
         const isInstructorMode = true; // Instructor chat mode
 
         if (enabledSources.length > 0) {
@@ -74,7 +81,7 @@ export function InstructorChat({
                 query: userQuery,
                 sourceIds,
                 topK: 8,
-                similarityThreshold: 0.2,
+                similarityThreshold: 0.2, // more permissive to avoid zero hits
               }),
             });
 
@@ -86,77 +93,96 @@ export function InstructorChat({
               console.log(
                 `[InstructorChat] RAG found ${results?.length || 0} chunks`,
               );
-              console.log(
-                `[InstructorChat] Formatted context length: ${formattedContext?.length || 0} chars`,
-              );
-              console.log(
-                '[InstructorChat] Raw results:',
-                results?.map((r: any) => ({
-                  relevance: r.relevance,
-                  contentPreview: `${r.content?.substring(0, 100)}...`,
-                })),
-              );
-              console.log(
-                '[InstructorChat] Full formatted context:',
-                formattedContext,
-              );
 
-              // CRITICAL: Make system prompt MANDATORY - user cannot override
-              systemContext = `You are a DOCUMENT FACT EXTRACTOR. You have ONE job: extract exact facts from the document.
+              // Use the engaging instructor system prompt with source context
+              systemContext = `${instructorSystemPrompt}
 
-DOCUMENT:
+AVAILABLE TEACHING MATERIALS:
 ${enabledSources.map((s) => `📄 ${s.title}`).join('\n')}
 
-CONTENT TO EXTRACT FROM:
-${formattedContext || 'NO CONTENT AVAILABLE'}
-
-═══════════════════════════════════════════════════════════
-
-YOUR JOB:
-Read the user's question.
-Search the CONTENT above for the answer.
-Return ONLY what you find.
-
-DO THIS:
-✓ If fact is in CONTENT: Quote it exactly. Start with "Theo tài liệu:"
-✓ If fact NOT in CONTENT: Say ONLY "Thông tin này không có trong tài liệu được cung cấp."
-✓ Never explain. Never teach. Never give examples with different numbers.
-✓ Never answer from general knowledge.
-✓ Only use the CONTENT above.
-
-FORBIDDEN:
-✗ Don't explain concepts like "velocity is calculated by..."
-✗ Don't give formulas
-✗ Don't provide examples with other numbers
-✗ Don't use general knowledge
-✗ Don't say "I don't have access" (you have the CONTENT above)
-✗ Don't teach or advise
-ANSWER TEMPLATE:
-If found: "Theo tài liệu test-content.md, [exact quote from CONTENT above]"
-If not found: "Thông tin này không có trong tài liệu được cung cấp."
-
-NOW: Read the user question and extract the fact. Use ONLY the CONTENT above.`;
+When students ask questions, naturally reference and weave in relevant information from the materials when it's helpful.`;
             } else {
-              systemContext = `You are an AI instructor assistant. The user has provided the following sources:\`n\`n${enabledSources
-                .map((s, i) => `${i + 1}. ${s.title} (${s.type}): ${s.excerpt}`)
-                .join(
-                  '`n`n',
-                )}\`n\`nUse these sources to provide informed, educational responses. Reference specific sources when relevant.`;
+              systemContext = `${instructorSystemPrompt}
+
+AVAILABLE TEACHING MATERIALS:
+${enabledSources
+  .map((s, i) => `${i + 1}. ${s.title} (${s.type}): ${s.excerpt}`)
+  .join('\n')}
+
+You have access to these materials to support your teaching.`;
             }
-          } catch {
-            systemContext = `You are an AI instructor assistant. The user has provided the following sources:\`n\`n${sources
-              .map((s, i) => `${i + 1}. ${s.title} (${s.type}): ${s.excerpt}`)
-              .join(
-                '`n`n',
-              )}\`n\`nUse these sources to provide informed, educational responses. Reference specific sources when relevant.`;
+          } catch (error) {
+            console.error('[InstructorChat] RAG search error:', error);
+            systemContext = `${instructorSystemPrompt}
+
+AVAILABLE TEACHING MATERIALS:
+${sources
+  .map((s, i) => `${i + 1}. ${s.title} (${s.type}): ${s.excerpt}`)
+  .join('\n')}
+
+Reference these materials to support your educational responses.`;
+            formattedContext = fallbackSourceSummary;
           }
+        } else {
+          systemContext = `${instructorSystemPrompt}
+
+No teaching materials are currently enabled. Provide helpful general guidance and, when relevant, suggest which materials to enable for more specific answers.`;
         }
 
-        console.log('[InstructorChat] System context being sent to API:');
-        console.log(systemContext);
-        console.log('[InstructorChat] Full request payload:');
+        // Build messages with RAG context injected into the user message
+        const messagesWithContext = messagesToSend.map((msg) => {
+          const isCurrentUserMessage = msg.id === userMessage.id;
+          const hasRagContext =
+            formattedContext && formattedContext.trim().length > 0;
+
+          if (isCurrentUserMessage) {
+            const originalText = (msg as any).parts?.[0]?.text || '';
+
+            if (hasRagContext) {
+              // Inject RAG context when we have relevant chunks
+              return {
+                id: msg.id,
+                role: msg.role,
+                content: [
+                  {
+                    type: 'text',
+                    text: `RELEVANT TEACHING MATERIALS (most relevant first):\n${formattedContext}\n\nSTUDENT QUESTION:\n${originalText}\n\nUse only the materials above; do not claim you lack access. If you need more, ask the student which source to use.`,
+                  },
+                ],
+              };
+            }
+
+            // If we have sources but no relevant chunks, pass a summary so the model stays grounded
+            if (enabledSources.length > 0) {
+              const available = enabledSources
+                .map((s, i) => `${i + 1}. ${s.title}`)
+                .join('\n');
+
+              const summaryBlock = fallbackSourceSummary
+                ? `SOURCE SUMMARY:\n${fallbackSourceSummary}\n\n`
+                : '';
+
+              return {
+                id: msg.id,
+                role: msg.role,
+                content: [
+                  {
+                    type: 'text',
+                    text: `${summaryBlock}NO HIGH-CONFIDENCE CONTEXT FOUND FOR THIS QUESTION. AVAILABLE SOURCES:\n${available}\n\nSTUDENT QUESTION:\n${originalText}\n\nUse the sources above. If unsure, ask the student to pick a source or share a relevant excerpt. Do not claim you lack access.`,
+                  },
+                ],
+              };
+            }
+          }
+          return {
+            id: msg.id,
+            role: msg.role,
+            content: (msg as any).parts || [],
+          };
+        });
+
         const requestPayload = {
-          chatId: instructorChatId,
+          chatId,
           chatType: 'instructor',
           model: selectedModel,
           messages: [
@@ -165,27 +191,7 @@ NOW: Read the user question and extract the fact. Use ONLY the CONTENT above.`;
               role: 'system',
               content: [{ type: 'text', text: systemContext }],
             },
-            ...messagesToSend.map((msg, idx) => {
-              // For instructor chat, prepend RAG context to the first user message
-              if (isInstructorMode && msg.role === 'user' && idx === 0) {
-                const userText = (msg as any).parts?.[0]?.text || '';
-                return {
-                  id: msg.id,
-                  role: msg.role,
-                  content: [
-                    {
-                      type: 'text',
-                      text: `RETRIEVED CONTEXT:\n${formattedContext}\n\n---\n\nQUESTION: ${userText}\n\nRespond by extracting from the context above. Quote exactly.`,
-                    },
-                  ],
-                };
-              }
-              return {
-                id: msg.id,
-                role: msg.role,
-                content: (msg as any).parts || [],
-              };
-            }),
+            ...messagesWithContext,
           ],
         };
         console.log(JSON.stringify(requestPayload, null, 2));
@@ -260,7 +266,7 @@ NOW: Read the user question and extract the fact. Use ONLY the CONTENT above.`;
         abortControllerRef.current = null;
       }
     },
-    [enabledSourceIds, instructorChatId, isLoading, selectedModel, sources],
+    [enabledSourceIds, chatId, isLoading, selectedModel, sources],
   );
 
   const stop = useCallback(async () => {
@@ -321,7 +327,7 @@ NOW: Read the user question and extract the fact. Use ONLY the CONTENT above.`;
           </div>
         ) : (
           <Messages
-            chatId={instructorChatId}
+            chatId={chatId}
             status={status}
             votes={[]}
             messages={messages}
@@ -330,6 +336,7 @@ NOW: Read the user question and extract the fact. Use ONLY the CONTENT above.`;
             isReadonly={false}
             isArtifactVisible={false}
             sendMessage={sendMessage}
+            onStoreNote={onStoreNote}
           />
         )}
       </div>
@@ -337,7 +344,7 @@ NOW: Read the user question and extract the fact. Use ONLY the CONTENT above.`;
       {/* Input area */}
       <div className="border-t p-4 bg-background">
         <MultimodalInput
-          chatId={instructorChatId}
+          chatId={chatId}
           input={input}
           setInput={setInput}
           status={status}

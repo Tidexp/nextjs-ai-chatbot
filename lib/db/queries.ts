@@ -36,6 +36,8 @@ import {
   type Topic,
   type UserTopicProgress,
   topicModule,
+  instructorNote,
+  type InstructorNote,
   topicLesson,
   type TopicModule,
   type TopicLesson,
@@ -304,6 +306,70 @@ export async function saveChat({
   } catch (error) {
     console.error('Database error in saveChat:', error);
     throw new ChatSDKError('bad_request:database', 'Failed to save chat');
+  }
+}
+
+export async function createInstructorNote({
+  chatId,
+  userId,
+  title,
+  content,
+}: {
+  chatId: string;
+  userId: string;
+  title: string;
+  content: string;
+}): Promise<InstructorNote> {
+  try {
+    const [note] = await db
+      .insert(instructorNote)
+      .values({ chatId, userId, title, content })
+      .returning();
+    return note;
+  } catch (error) {
+    console.error('Database error in createInstructorNote:', error);
+    throw new ChatSDKError('bad_request:database', 'Failed to save note');
+  }
+}
+
+export async function listInstructorNotes({
+  chatId,
+  userId,
+}: {
+  chatId: string;
+  userId: string;
+}): Promise<InstructorNote[]> {
+  try {
+    return await db
+      .select()
+      .from(instructorNote)
+      .where(
+        and(
+          eq(instructorNote.chatId, chatId),
+          eq(instructorNote.userId, userId),
+        ),
+      )
+      .orderBy(desc(instructorNote.createdAt));
+  } catch (error) {
+    console.error('Database error in listInstructorNotes:', error);
+    throw new ChatSDKError('bad_request:database', 'Failed to load notes');
+  }
+}
+
+export async function deleteInstructorNote({
+  id,
+  userId,
+}: {
+  id: string;
+  userId: string;
+}) {
+  try {
+    return await db
+      .delete(instructorNote)
+      .where(and(eq(instructorNote.id, id), eq(instructorNote.userId, userId)));
+  } catch (error) {
+    console.error('Database error in deleteInstructorNote:', error);
+    throw new ChatSDKError('bad_request:database', 'Failed to delete note');
   }
 }
 

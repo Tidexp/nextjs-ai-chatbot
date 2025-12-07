@@ -43,6 +43,7 @@ const PurePreviewMessage = ({
   requiresScrollPadding,
   messages,
   sendMessage,
+  onStoreNote,
 }: {
   chatId: string;
   message: ChatMessage;
@@ -54,6 +55,7 @@ const PurePreviewMessage = ({
   requiresScrollPadding: boolean;
   messages: ChatMessage[];
   sendMessage: UseChatHelpers<ChatMessage>['sendMessage'];
+  onStoreNote?: (message: ChatMessage) => void;
 }) => {
   const [mode, setMode] = useState<'view' | 'edit'>('view');
   const [previewFile, setPreviewFile] = useState<{
@@ -185,7 +187,8 @@ const PurePreviewMessage = ({
                       if ((part as any).type === 'image') {
                         return (
                           <div key={key} className="max-w-xs group relative">
-                            <div
+                            <button
+                              type="button"
                               className="block cursor-pointer hover:opacity-90 transition-opacity"
                               onClick={() => {
                                 setPreviewFile({
@@ -195,6 +198,7 @@ const PurePreviewMessage = ({
                                 });
                                 setIsPreviewOpen(true);
                               }}
+                              aria-label="Open image preview"
                             >
                               <Image
                                 src={(part as any).image}
@@ -204,7 +208,7 @@ const PurePreviewMessage = ({
                                 className="rounded-lg max-w-full h-auto"
                                 style={{ maxHeight: '200px' }}
                               />
-                            </div>
+                            </button>
                             <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity">
                               <Button
                                 size="sm"
@@ -235,8 +239,9 @@ const PurePreviewMessage = ({
 
                         return (
                           <div key={key} className="max-w-xs group relative">
-                            <div
-                              className="border rounded-lg p-3 bg-muted/50 hover:bg-muted transition-colors cursor-pointer"
+                            <button
+                              type="button"
+                              className="w-full text-left border rounded-lg p-3 bg-muted/50 hover:bg-muted transition-colors cursor-pointer"
                               onClick={() => {
                                 setPreviewFile({
                                   url: fileUrl,
@@ -245,6 +250,7 @@ const PurePreviewMessage = ({
                                 });
                                 setIsPreviewOpen(true);
                               }}
+                              aria-label={`Open preview for ${fileName}`}
                             >
                               <div className="flex items-center gap-2">
                                 {mediaType === 'text/plain' ? (
@@ -269,7 +275,7 @@ const PurePreviewMessage = ({
                                   </p>
                                 </div>
                               </div>
-                            </div>
+                            </button>
                           </div>
                         );
                       }
@@ -463,6 +469,7 @@ const PurePreviewMessage = ({
                 setMessages={setMessages}
                 sendMessage={sendMessage}
                 regenerate={regenerate}
+                onStoreNote={onStoreNote}
               />
             )}
           </div>
@@ -492,6 +499,7 @@ export const PreviewMessage = memo(
     if (prevProps.chatId !== nextProps.chatId) return false;
     if (prevProps.messages.length !== nextProps.messages.length) return false;
     if (prevProps.sendMessage !== nextProps.sendMessage) return false;
+    if (prevProps.onStoreNote !== nextProps.onStoreNote) return false;
 
     return true; // Return true if props are equal (don't re-render)
   },

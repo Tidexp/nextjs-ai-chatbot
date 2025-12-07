@@ -14,7 +14,7 @@ import {
 } from '@/lib/db/queries';
 import { auth } from '@/app/(auth)/auth';
 import type { VisibilityType } from '@/components/visibility-selector';
-import { myProvider } from '@/lib/ai/providers';
+
 import { ChatSDKError } from '@/lib/errors';
 
 export async function saveChatModelAsCookie(model: string) {
