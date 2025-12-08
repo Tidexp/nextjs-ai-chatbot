@@ -19,7 +19,7 @@ async function convertToGoogleFormat(
   let messageArray: any[] = [];
 
   // This logic handles input from the Vercel AI SDK which is now an object, not just an array.
-  if (messages && messages.messages && Array.isArray(messages.messages)) {
+  if (messages?.messages && Array.isArray(messages.messages)) {
     messageArray = messages.messages;
   } else if (Array.isArray(messages)) {
     messageArray = messages;

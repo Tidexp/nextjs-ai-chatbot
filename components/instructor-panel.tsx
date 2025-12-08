@@ -77,7 +77,11 @@ const saveSourceToAPI = async (
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(source),
     });
-    if (!response.ok) throw new Error('Failed to save source');
+    if (!response.ok) {
+      const txt = await response.text();
+      console.error('[Upload] Failed to save source:', response.status, txt);
+      throw new Error('Failed to save source');
+    }
     const savedSource = await response.json();
 
     // Generate embeddings async in background if not skipped
@@ -128,8 +132,13 @@ const deleteSourceFromAPI = async (sourceId: string) => {
   try {
     const response = await fetch(`/api/instructor-sources?id=${sourceId}`, {
       method: 'DELETE',
+      credentials: 'include',
     });
-    if (!response.ok) throw new Error('Failed to delete source');
+    if (!response.ok) {
+      const txt = await response.text();
+      console.error('Failed to delete source response:', response.status, txt);
+      throw new Error('Failed to delete source');
+    }
   } catch (error) {
     console.error('Failed to delete source from API:', error);
     throw error;
@@ -179,6 +188,8 @@ export function InstructorPanel({
   const [enabledSources, setEnabledSources] = React.useState<Set<string>>(
     new Set(),
   );
+  const [viewingSource, setViewingSource] =
+    React.useState<SourceItemWithContent | null>(null);
 
   // Initialize all sources as enabled when loaded
   React.useEffect(() => {
@@ -401,7 +412,43 @@ export function InstructorPanel({
   }
 
   async function readFileContent(file: File): Promise<string> {
+    console.log(
+      `[readFileContent] Called for: ${file.name}, type: ${file.type}, size: ${file.size}`,
+    );
     try {
+      // Image files - extract text via OCR
+      if (file.type.startsWith('image/')) {
+        console.log(`[Image] Processing ${file.name} with OCR...`);
+        try {
+          const arrayBuffer = await file.arrayBuffer();
+          const base64 = btoa(
+            new Uint8Array(arrayBuffer).reduce(
+              (data, byte) => data + String.fromCharCode(byte),
+              '',
+            ),
+          );
+
+          const ocrResponse = await fetch('/api/ocr', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ imageBase64: base64 }),
+          });
+
+          if (ocrResponse.ok) {
+            const { text, language } = await ocrResponse.json();
+            console.log(
+              `[Image] OCR extracted ${text.length} chars${language ? ` (${language})` : ''}`,
+            );
+            return text || '[No text found in image]';
+          }
+          console.error('[Image] OCR failed:', await ocrResponse.text());
+          return '[OCR processing failed]';
+        } catch (ocrError) {
+          console.error('[Image] OCR error:', ocrError);
+          return '[OCR error - could not extract text]';
+        }
+      }
+
       if (
         file.type.startsWith('text/') ||
         file.name.endsWith('.md') ||
@@ -413,13 +460,100 @@ export function InstructorPanel({
       }
       // DOCX parsing via mammoth (browser compatible)
       if (file.name.toLowerCase().endsWith('.docx')) {
+        console.log(
+          `[DOCX] Processing file: ${file.name}, size: ${file.size} bytes`,
+        );
         try {
           const arrayBuffer = await file.arrayBuffer();
+          console.log(
+            `[DOCX] ArrayBuffer loaded: ${arrayBuffer.byteLength} bytes`,
+          );
+
           const mammoth = await import('mammoth');
-          const result = await mammoth.extractRawText({ arrayBuffer });
-          return result.value || '';
+          console.log('[DOCX] Mammoth library loaded');
+
+          // Extract text with mammoth (handles DOCX structure properly)
+          console.log('[DOCX] Starting mammoth text extraction...');
+          const textResult = await mammoth.extractRawText({ arrayBuffer });
+          console.log('[DOCX] Mammoth extraction complete');
+
+          const fullText = textResult.value || '';
+
+          console.log(
+            `[DOCX] Mammoth extracted ${fullText.length} chars from ${file.name}`,
+          );
+          console.log(`[DOCX] First 500 chars: ${fullText.substring(0, 500)}`);
+          console.log(`[DOCX] Messages/warnings:`, textResult.messages);
+
+          // If very little text extracted, file likely contains images with text
+          if (fullText.length < 100) {
+            console.log(
+              '[DOCX] Little text found - file may contain images. Extracting images for OCR...',
+            );
+          }
+
+          // Extract images and run OCR on them
+          console.log('[DOCX] Extracting images for OCR...');
+          const JSZip = (await import('jszip')).default;
+          const zip = await JSZip.loadAsync(arrayBuffer);
+          const imageFiles = Object.keys(zip.files).filter((name) =>
+            /word\/media\/image\d+\.(png|jpg|jpeg|gif|bmp)$/i.test(name),
+          );
+
+          if (imageFiles.length > 0) {
+            console.log(`[DOCX] Found ${imageFiles.length} embedded images`);
+            const imageTexts: string[] = [];
+
+            for (let i = 0; i < imageFiles.length; i++) {
+              const imgFile = imageFiles[i];
+              try {
+                const imgData = await zip.file(imgFile)?.async('base64');
+                if (imgData) {
+                  console.log(
+                    `[DOCX] Running OCR on image ${i + 1}/${imageFiles.length}...`,
+                  );
+                  const ocrResponse = await fetch('/api/ocr', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ imageBase64: imgData }),
+                  });
+
+                  if (ocrResponse.ok) {
+                    const { text } = await ocrResponse.json();
+                    if (text && text.trim().length > 0) {
+                      imageTexts.push(`\n\n[Image ${i + 1} Text]:\n${text}`);
+                      console.log(
+                        `[DOCX] Extracted ${text.length} chars from image ${i + 1}`,
+                      );
+                    }
+                  }
+                }
+              } catch (imgError) {
+                console.error(
+                  `[DOCX] Failed to process image ${i + 1}:`,
+                  imgError,
+                );
+              }
+            }
+
+            // Append image texts to main document text
+            if (imageTexts.length > 0) {
+              const combinedText = `${fullText}\n\n=== TEXT FROM EMBEDDED IMAGES ===${imageTexts.join('')}`;
+              console.log(
+                `[DOCX] Total extracted: ${combinedText.length} chars (${fullText.length} from text, ${combinedText.length - fullText.length} from OCR)`,
+              );
+              return combinedText;
+            }
+          }
+
+          return fullText;
         } catch (err) {
-          console.error('Failed to parse DOCX', err);
+          console.error('[DOCX] Failed to parse DOCX:', err);
+          console.error(
+            '[DOCX] Error stack:',
+            err instanceof Error ? err.stack : 'No stack trace',
+          );
+          return ''; // Return empty string on error
         }
       }
       // XLSX parsing via xlsx (SheetJS) — flatten all sheets to plain text
@@ -455,20 +589,24 @@ export function InstructorPanel({
       // PDF parsing via pdfjs-dist — extract text content page by page
       if (file.name.toLowerCase().endsWith('.pdf')) {
         try {
+          console.log(`[PDF] Reading ${file.name} (${file.size} bytes)`);
           const arrayBuffer = await file.arrayBuffer();
           const pdfjsLib = await import('pdfjs-dist');
-          // Worker is optional in modern builds; set if available
-          try {
-            // @ts-ignore
-            pdfjsLib.GlobalWorkerOptions.workerSrc =
-              '//cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
-          } catch {}
+
+          // Set worker to empty blob to disable it completely
           // @ts-ignore
-          const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
+          pdfjsLib.GlobalWorkerOptions.workerSrc = '';
+
+          // @ts-ignore
+          const loadingTask = pdfjsLib.getDocument({
+            data: arrayBuffer,
+          });
           const pdf = await loadingTask.promise;
+          console.log(`[PDF] Loaded PDF with ${pdf.numPages} pages`);
           const texts: string[] = [];
           for (let i = 1; i <= pdf.numPages; i++) {
             const page = await pdf.getPage(i);
+            console.log(`[PDF] Processing page ${i}/${pdf.numPages}`);
             const content = await page.getTextContent();
             const pageText = content.items
               .map((item: any) =>
@@ -476,9 +614,65 @@ export function InstructorPanel({
               )
               .filter(Boolean)
               .join(' ');
-            texts.push(`\n\n--- Page ${i} ---\n${pageText}`);
+
+            // OCR fallback for scanned pages (minimal text extracted)
+            if (pageText.trim().length < 50) {
+              console.log(
+                `[PDF] Page ${i} has minimal text (${pageText.length} chars), running OCR...`,
+              );
+              try {
+                // Render page as image
+                const viewport = page.getViewport({ scale: 2.0 });
+                const canvas = document.createElement('canvas');
+                const context = canvas.getContext('2d');
+                if (context) {
+                  canvas.height = viewport.height;
+                  canvas.width = viewport.width;
+
+                  await page.render({ canvasContext: context, viewport })
+                    .promise;
+                  const imageData = canvas.toDataURL('image/png');
+                  const base64Data = imageData.split(',')[1];
+
+                  // Call OCR API
+                  const ocrResponse = await fetch('/api/ocr', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ imageBase64: base64Data }),
+                  });
+
+                  if (ocrResponse.ok) {
+                    const { text: ocrText } = await ocrResponse.json();
+                    console.log(
+                      `[PDF] OCR extracted ${ocrText.length} chars from page ${i}`,
+                    );
+                    texts.push(`\n\n--- Page ${i} (OCR) ---\n${ocrText}`);
+                  } else {
+                    console.error(
+                      `[PDF] OCR failed for page ${i}:`,
+                      await ocrResponse.text(),
+                    );
+                    texts.push(
+                      `\n\n--- Page ${i} ---\n${pageText || '[No text extracted]'}`,
+                    );
+                  }
+                } else {
+                  texts.push(`\n\n--- Page ${i} ---\n${pageText}`);
+                }
+              } catch (ocrError) {
+                console.error(`[PDF] OCR error on page ${i}:`, ocrError);
+                texts.push(`\n\n--- Page ${i} ---\n${pageText}`);
+              }
+            } else {
+              texts.push(`\n\n--- Page ${i} ---\n${pageText}`);
+            }
           }
-          return texts.join('\n');
+          const combined = texts.join('\n');
+          console.log(`[PDF] Combined text length: ${combined.length}`);
+          if (combined.trim().length === 0) {
+            return '[No text extracted from PDF pages]';
+          }
+          return combined;
         } catch (err) {
           console.error('Failed to parse PDF', err);
         }
@@ -507,8 +701,21 @@ export function InstructorPanel({
 
     for (const f of files) {
       try {
+        console.log(
+          `[Upload] Processing file: ${f.name} (${f.type}, ${f.size} bytes)`,
+        );
         const type = detectType(f);
         const content = await readFileContent(f);
+        console.log(
+          `[Upload] readFileContent done for ${f.name}, length: ${content?.length || 0}`,
+        );
+
+        if (!content || content.trim().length === 0) {
+          toast.error(`No text extracted from ${f.name}. Skipping embedding.`);
+          console.warn(`[Upload] No text extracted from ${f.name}; skipping.`);
+          continue;
+        }
+
         const excerpt = content.slice(0, 200).replace(/\s+/g, ' ').trim();
 
         // Create a blob URL for the file (stored in browser memory)
@@ -527,8 +734,10 @@ export function InstructorPanel({
           {
             onEmbeddingStart: (id) => {
               setLoadingSources((prev) => new Set(prev).add(id));
+              console.log(`[Upload] Starting embedding for ${f.name} (${id})`);
             },
             onEmbeddingComplete: (id) => {
+              console.log(`[Upload] Embedding finished for ${f.name} (${id})`);
               setLoadingSources((prev) => {
                 const next = new Set(prev);
                 next.delete(id);
@@ -537,6 +746,7 @@ export function InstructorPanel({
             },
           },
         );
+        console.log(`[Upload] Saved source ${savedSource.id} for ${f.name}`);
         newSources.push(savedSource);
         // Add to sources immediately so user sees it right away
         setSources((prev) => [savedSource, ...prev]);
@@ -626,9 +836,9 @@ export function InstructorPanel({
           type = 'markdown';
         }
 
-        // Fetch full content for RAG embedding (for text-based files)
+        // Fetch full content for RAG embedding (for text-based files and PDFs)
         let excerpt = `${type.toUpperCase()} from Google Drive`;
-        if (type !== 'image' && type !== 'pdf') {
+        if (type !== 'image') {
           try {
             const response = await fetch(exportUrl, {
               headers: {
@@ -636,23 +846,93 @@ export function InstructorPanel({
               },
             });
             if (response.ok) {
-              const fullContent = await response.text();
-              content = fullContent; // Store full content for RAG
-              excerpt = fullContent.slice(0, 200).replace(/\s+/g, ' ').trim();
-              console.log(
-                `[Google Drive] Fetched ${fullContent.length} chars from ${doc.name}`,
-              );
+              if (type === 'pdf') {
+                // For PDFs, send to server-side parser
+                const arrayBuffer = await response.arrayBuffer();
+                try {
+                  const formData = new FormData();
+                  const pdfBlob = new Blob([arrayBuffer], {
+                    type: 'application/pdf',
+                  });
+                  formData.append('file', pdfBlob, 'document.pdf');
+
+                  const parseResponse = await fetch('/api/parse-pdf', {
+                    method: 'POST',
+                    body: formData,
+                  });
+
+                  if (parseResponse.ok) {
+                    const { text, pages } = await parseResponse.json();
+                    content = text || '[No text extracted from PDF]';
+                    excerpt = text.slice(0, 200).replace(/\s+/g, ' ').trim();
+                    console.log(
+                      `[Google Drive] Extracted ${text.length} chars from PDF ${doc.name} (${pages} pages)`,
+                    );
+                  } else {
+                    console.error(
+                      '[Google Drive] PDF parsing failed:',
+                      await parseResponse.text(),
+                    );
+                    content = '[Failed to parse PDF]';
+                    excerpt = 'PDF parsing failed';
+                  }
+                } catch (pdfError) {
+                  console.error('[Google Drive] PDF parsing error:', pdfError);
+                  content = '[PDF parsing error]';
+                  excerpt = 'PDF parsing error';
+                }
+              } else if (
+                doc.name.toLowerCase().endsWith('.docx') ||
+                mimeType ===
+                  'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+              ) {
+                // For DOCX, parse with mammoth
+                console.log(`[Google Drive] Processing DOCX: ${doc.name}`);
+                const arrayBuffer = await response.arrayBuffer();
+                try {
+                  const mammoth = await import('mammoth');
+                  const textResult = await mammoth.extractRawText({
+                    arrayBuffer,
+                  });
+                  content = textResult.value || '[No text extracted from DOCX]';
+                  excerpt = content.slice(0, 200).replace(/\s+/g, ' ').trim();
+                  console.log(
+                    `[Google Drive] Extracted ${content.length} chars from DOCX ${doc.name}`,
+                  );
+                  console.log(
+                    `[Google Drive] DOCX Preview: ${content.substring(0, 300)}`,
+                  );
+                } catch (docxError) {
+                  console.error(
+                    '[Google Drive] DOCX parsing error:',
+                    docxError,
+                  );
+                  content = '[DOCX parsing error]';
+                  excerpt = 'DOCX parsing error';
+                }
+              } else {
+                // Text-based files
+                const fullContent = await response.text();
+                content = fullContent; // Store full content for RAG
+                excerpt = fullContent.slice(0, 200).replace(/\s+/g, ' ').trim();
+                console.log(
+                  `[Google Drive] Fetched ${fullContent.length} chars from ${doc.name}`,
+                );
+              }
             } else if (response.status === 403) {
               console.error(
                 'Google Drive API 403 error. The OAuth token may not have sufficient permissions.',
               );
               excerpt = 'Preview unavailable - permission denied';
+              content = '';
             } else {
               console.error(`Google Drive API error: ${response.status}`);
               excerpt = 'Preview unavailable';
+              content = '';
             }
           } catch (error) {
             console.error('Error fetching content from Google Drive:', error);
+            content = '';
           }
         }
 
@@ -1069,15 +1349,15 @@ export function InstructorPanel({
                     <div
                       className="cursor-pointer"
                       onClick={(e) => {
-                        if (!isLoading && s.sourceUrl) {
-                          window.open(s.sourceUrl, '_blank');
+                        if (!isLoading) {
+                          setViewingSource(s);
                         }
                       }}
                       onKeyDown={(e) => {
                         if (e.key === 'Enter' || e.key === ' ') {
                           e.preventDefault();
-                          if (!isLoading && s.sourceUrl) {
-                            window.open(s.sourceUrl, '_blank');
+                          if (!isLoading) {
+                            setViewingSource(s);
                           }
                         }
                       }}
@@ -1759,6 +2039,167 @@ export function InstructorPanel({
                   size="sm"
                   variant="outline"
                   onClick={() => setSelectedNote(null)}
+                >
+                  Close
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Source Content Viewer Modal */}
+      {viewingSource && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+          onClick={() => setViewingSource(null)}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') {
+              setViewingSource(null);
+            }
+          }}
+          role="dialog"
+          aria-modal="true"
+        >
+          <div
+            className="bg-background rounded-lg shadow-2xl w-full max-w-4xl mx-4 max-h-[85vh] flex flex-col border border-border"
+            onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => e.stopPropagation()}
+            role="document"
+            tabIndex={-1}
+          >
+            {/* Header */}
+            <div className="flex items-center justify-between px-6 py-4 border-b border-border bg-muted/30">
+              <div className="flex items-center gap-3 flex-1 min-w-0">
+                <div className="flex-shrink-0">
+                  {viewingSource.type === 'pdf' && (
+                    <svg
+                      className="w-6 h-6 text-red-500"
+                      fill="currentColor"
+                      viewBox="0 0 20 20"
+                    >
+                      <path d="M4 3a2 2 0 00-2 2v10a2 2 0 002 2h12a2 2 0 002-2V5a2 2 0 00-2-2H4zm3 4a1 1 0 011-1h4a1 1 0 110 2H8a1 1 0 01-1-1zm0 3a1 1 0 011-1h4a1 1 0 110 2H8a1 1 0 01-1-1zm0 3a1 1 0 011-1h4a1 1 0 110 2H8a1 1 0 01-1-1z" />
+                    </svg>
+                  )}
+                  {viewingSource.type === 'code' && (
+                    <svg
+                      className="w-6 h-6 text-blue-500"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"
+                      />
+                    </svg>
+                  )}
+                  {viewingSource.type === 'markdown' && (
+                    <svg
+                      className="w-6 h-6 text-purple-500"
+                      fill="currentColor"
+                      viewBox="0 0 20 20"
+                    >
+                      <path d="M9 4.804A7.968 7.968 0 005.5 4c-1.255 0-2.443.29-3.5.804v10A7.969 7.969 0 015.5 14c1.669 0 3.218.51 4.5 1.385A7.962 7.962 0 0114.5 14c1.255 0 2.443.29 3.5.804v-10A7.968 7.968 0 0014.5 4c-1.255 0-2.443.29-3.5.804V12a1 1 0 11-2 0V4.804z" />
+                    </svg>
+                  )}
+                  {viewingSource.type === 'image' && (
+                    <svg
+                      className="w-6 h-6 text-green-500"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"
+                      />
+                    </svg>
+                  )}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <h2 className="text-lg font-semibold truncate">
+                    {viewingSource.title}
+                  </h2>
+                  <p className="text-xs text-muted-foreground">
+                    {viewingSource.content?.length || 0} characters
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                className="text-muted-foreground hover:text-foreground transition-colors rounded-full p-2 hover:bg-muted"
+                onClick={() => setViewingSource(null)}
+                aria-label="Close"
+              >
+                <svg
+                  className="w-5 h-5"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M6 18L18 6M6 6l12 12"
+                  />
+                </svg>
+              </button>
+            </div>
+
+            {/* Content */}
+            <div className="flex-1 overflow-y-auto px-6 py-4">
+              <pre className="whitespace-pre-wrap font-mono text-sm leading-relaxed">
+                {viewingSource.content || 'No content available'}
+              </pre>
+            </div>
+
+            {/* Footer with Actions */}
+            <div className="flex items-center justify-between px-6 py-4 border-t border-border bg-muted/30">
+              <div className="text-sm text-muted-foreground">
+                {viewingSource.sourceUrl ? (
+                  <span className="truncate max-w-md block">
+                    Source: {viewingSource.sourceUrl}
+                  </span>
+                ) : (
+                  <span>Local file</span>
+                )}
+              </div>
+              <div className="flex gap-2">
+                {viewingSource.sourceUrl && (
+                  <Button
+                    size="sm"
+                    onClick={() => {
+                      if (viewingSource.sourceUrl) {
+                        window.open(viewingSource.sourceUrl, '_blank');
+                      }
+                    }}
+                  >
+                    <svg
+                      className="w-4 h-4 mr-2"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"
+                      />
+                    </svg>
+                    Open Original
+                  </Button>
+                )}
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setViewingSource(null)}
                 >
                   Close
                 </Button>

@@ -16,10 +16,34 @@ const CHUNK_SIZE = 350; // tokens (approximate, ~4 chars per token)
 const CHUNK_OVERLAP = 75;
 
 /**
+ * Sanitize text to remove invalid UTF-8 sequences and surrogate pairs
+ * HuggingFace API requires valid JSON, so we must clean malformed Unicode
+ */
+function sanitizeForEmbedding(text: string): string {
+  // Convert to array, filter out invalid chars, convert back
+  const charCodes = Array.from(text).filter((char) => {
+    const code = char.charCodeAt(0);
+    // Remove null bytes and control chars (except tab/newline/CR)
+    // Remove UTF-16 surrogates (0xD800-0xDFFF)
+    return (
+      code !== 0 &&
+      (code >= 32 || code === 9 || code === 10 || code === 13) &&
+      (code < 0xd800 || code > 0xdfff)
+    );
+  });
+
+  const cleaned = charCodes.join('').replace(/ {2,}/g, ' ').trim();
+  return cleaned || 'placeholder'; // Return placeholder if everything was stripped
+}
+
+/**
  * Generate embedding vector for text using Hugging Face
  */
 export async function generateEmbedding(text: string): Promise<number[]> {
   try {
+    // Sanitize text to remove invalid UTF-8 and surrogates before embedding
+    const sanitizedText = sanitizeForEmbedding(text);
+
     // Use direct API to avoid verbose SDK logging
     if (USE_DIRECT_API) {
       const response = await fetch(
@@ -32,7 +56,7 @@ export async function generateEmbedding(text: string): Promise<number[]> {
             'x-wait-for-model': 'true',
           },
           body: JSON.stringify({
-            inputs: text,
+            inputs: sanitizedText,
           }),
         },
       );
@@ -49,7 +73,7 @@ export async function generateEmbedding(text: string): Promise<number[]> {
     // Fallback to SDK if direct API disabled
     const result = await hf.featureExtraction({
       model: EMBEDDING_MODEL,
-      inputs: text,
+      inputs: sanitizedText,
       waitForModel: true,
     });
     return Array.from(result as any as Float32Array);

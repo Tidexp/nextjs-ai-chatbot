@@ -359,38 +359,47 @@ export async function POST(request: Request) {
     }
 
     // Save chat and new messages (chat first due to foreign key)
-    const isNewChat = !chat;
+    // Skip saving for instructor mode
+    const isInstructorChatType = chatType === 'instructor';
 
-    // Find NEW user messages that aren't in the database yet
-    const newUserMessages = uiMessages.filter(
-      (msg: any) => msg.role === 'user' && !existingMessageIds.has(msg.id),
-    );
+    if (!isInstructorChatType) {
+      const isNewChat = !chat;
 
-    // Save chat first if it's new (required for foreign key constraint)
-    if (isNewChat) {
-      console.log(`[POST] Creating new chat: ${chatId}`);
-      await saveChat({
-        id: chatId,
-        userId: session.user.id,
-        title: chatType === 'instructor' ? 'Instructor Chat' : 'New Chat',
-        visibility: 'private',
-        chatType,
-      });
-    }
+      // Find NEW user messages that aren't in the database yet
+      const newUserMessages = uiMessages.filter(
+        (msg: any) => msg.role === 'user' && !existingMessageIds.has(msg.id),
+      );
 
-    // Now save messages (chat must exist first)
-    if (newUserMessages.length > 0) {
-      console.log(`[POST] Saving ${newUserMessages.length} new user messages`);
-      await saveMessages({
-        messages: newUserMessages.map((msg: any) => ({
-          chatId,
-          id: msg.id,
-          role: 'user',
-          parts: msg.parts || [],
-          attachments: [],
-          createdAt: new Date(),
-        })),
-      });
+      // Save chat first if it's new (required for foreign key constraint)
+      if (isNewChat) {
+        console.log(`[POST] Creating new chat: ${chatId}`);
+        await saveChat({
+          id: chatId,
+          userId: session.user.id,
+          title: 'New Chat',
+          visibility: 'private',
+          chatType,
+        });
+      }
+
+      // Now save messages (chat must exist first)
+      if (newUserMessages.length > 0) {
+        console.log(
+          `[POST] Saving ${newUserMessages.length} new user messages`,
+        );
+        await saveMessages({
+          messages: newUserMessages.map((msg: any) => ({
+            chatId,
+            id: msg.id,
+            role: 'user',
+            parts: msg.parts || [],
+            attachments: [],
+            createdAt: new Date(),
+          })),
+        });
+      }
+    } else {
+      console.log('[POST] Skipping message storage for instructor mode');
     }
 
     // Use the custom provider directly for streaming
@@ -451,7 +460,7 @@ export async function POST(request: Request) {
     const messageId = generateUUID();
 
     // For instructor chat, use very low temperature (0.1) to force strict adherence to instructions
-    const isInstructorMode = chatType === 'instructor';
+    const isInstructorMode = isInstructorChatType;
     console.log('[POST] isInstructorMode:', isInstructorMode);
     console.log(
       '[POST] Setting temperature to:',
@@ -488,32 +497,39 @@ export async function POST(request: Request) {
       },
       flush() {
         console.log('[POST] Transform stream flush called');
-        // Save accumulated text when stream ends
-        if (accumulatedText && accumulatedText.length > 0) {
-          console.log('[POST] Stream finished, saving assistant message');
-          // Use after() to ensure save completes even after response ends
-          after(async () => {
-            try {
-              await saveMessages({
-                messages: [
-                  {
-                    id: messageId,
-                    role: 'assistant',
-                    parts: [{ type: 'text', text: accumulatedText }],
-                    createdAt: new Date(),
-                    attachments: [],
-                    chatId,
-                  },
-                ],
-              });
-              console.log('[POST] Assistant message saved:', messageId);
-            } catch (saveError) {
-              console.error(
-                '[POST] Failed to save assistant message:',
-                saveError,
-              );
-            }
-          });
+        // Skip saving assistant messages for instructor mode
+        if (!isInstructorChatType) {
+          // Save accumulated text when stream ends
+          if (accumulatedText && accumulatedText.length > 0) {
+            console.log('[POST] Stream finished, saving assistant message');
+            // Use after() to ensure save completes even after response ends
+            after(async () => {
+              try {
+                await saveMessages({
+                  messages: [
+                    {
+                      id: messageId,
+                      role: 'assistant',
+                      parts: [{ type: 'text', text: accumulatedText }],
+                      createdAt: new Date(),
+                      attachments: [],
+                      chatId,
+                    },
+                  ],
+                });
+                console.log('[POST] Assistant message saved:', messageId);
+              } catch (saveError) {
+                console.error(
+                  '[POST] Failed to save assistant message:',
+                  saveError,
+                );
+              }
+            });
+          }
+        } else {
+          console.log(
+            '[POST] Skipping assistant message storage for instructor mode',
+          );
         }
       },
     });
