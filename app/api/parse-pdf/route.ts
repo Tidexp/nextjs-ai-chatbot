@@ -16,6 +16,9 @@ import type { NextRequest } from 'next/server';
 import { NextResponse } from 'next/server';
 import { auth } from '@/app/(auth)/auth';
 
+// Force Node.js runtime so pdf-parse can run (uses Node APIs, not Edge-safe)
+export const runtime = 'nodejs';
+
 export async function POST(request: NextRequest) {
   try {
     // Verify user is authenticated
@@ -31,66 +34,82 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'No file provided' }, { status: 400 });
     }
 
-    const buffer = await file.arrayBuffer();
+    const arrayBuffer = await file.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
 
-    try {
-      // Use pdfjs-dist for server-side parsing; disable worker to avoid worker bundle resolution
-      const pdfjsLib = await import('pdfjs-dist/legacy/build/pdf.mjs');
-      // Ensure worker is disabled to avoid missing worker bundle resolution in Turbopack
-      if (pdfjsLib.GlobalWorkerOptions) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        (pdfjsLib.GlobalWorkerOptions as any).workerSrc =
-          'node_modules/pdfjs-dist/build/pdf.worker.min.js';
-      }
+    // Use pdf2json for reliable server-side parsing (already installed)
+    const PDFParser = (await import('pdf2json')).default;
 
-      const loadingTask = pdfjsLib.getDocument({
-        data: new Uint8Array(buffer),
-        useSystemFonts: true,
-        // The following flags run parsing in-process without worker and avoid font fetches
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        disableWorker: true,
-        useWorkerFetch: false,
-        disableFontFace: true,
-        isEvalSupported: false,
-        isOffscreenCanvasSupported: false,
-      } as any);
+    const pdfParser = new PDFParser(null, true);
 
-      const pdf = await loadingTask.promise;
-      const numPages = pdf.numPages;
+    // Parse PDF and extract text
+    const parsePromise = new Promise<{ text: string; pages: number }>(
+      (resolve, reject) => {
+        pdfParser.on('pdfParser_dataReady', (pdfData: any) => {
+          try {
+            let text = '';
+            let pages = 0;
 
-      // Extract text from all pages
-      let fullText = '';
-      for (let i = 1; i <= numPages; i++) {
-        const page = await pdf.getPage(i);
-        const textContent = await page.getTextContent();
-        const pageText = textContent.items
-          .map((item: any) => item.str)
-          .join(' ');
-        fullText = `${fullText}${pageText}\n`;
-      }
+            if (pdfData?.Pages) {
+              pages = pdfData.Pages.length;
+              for (const page of pdfData.Pages) {
+                if (page.Texts) {
+                  for (const textItem of page.Texts) {
+                    if (textItem.R) {
+                      for (const run of textItem.R) {
+                        if (run.T) {
+                          try {
+                            text += `${decodeURIComponent(run.T)} `;
+                          } catch {
+                            // If URI decode fails, use the raw text
+                            text += `${run.T} `;
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+                text += '\n';
+              }
+            }
 
-      console.log(
-        `[PDF Parse] Extracted ${fullText.length} chars from ${file.name} (${numPages} pages)`,
-      );
+            resolve({ text: text.trim(), pages });
+          } catch (err) {
+            reject(err);
+          }
+        });
 
-      return NextResponse.json({
-        success: true,
-        text: fullText.trim(),
-        pages: numPages,
-      });
-    } catch (pdfError: any) {
-      console.error('[PDF Parse] Error parsing PDF:', pdfError);
-      return NextResponse.json(
-        {
-          error: `Failed to parse PDF: ${pdfError.message}`,
-        },
-        { status: 500 },
-      );
-    }
+        pdfParser.on('pdfParser_dataError', (error: any) => {
+          reject(new Error(error.parserError || 'PDF parsing failed'));
+        });
+
+        pdfParser.parseBuffer(buffer);
+      },
+    );
+
+    const { text, pages } = await parsePromise;
+
+    console.log(
+      `[PDF Parse] Extracted ${text.length} chars from ${file.name} (${pages} pages)`,
+    );
+
+    // Note: PDF image OCR disabled due to complexity
+    // PDFs with images: text extraction works, image OCR requires additional tooling
+    // Workaround: Convert PDF to images externally or upload DOCX with embedded images instead
+    console.log(
+      '[PDF Parse] Note: PDF image OCR not available - text-only extraction completed',
+    );
+    const finalText = text;
+
+    return NextResponse.json({
+      success: true,
+      text,
+      pages,
+    });
   } catch (error: any) {
     console.error('[PDF Parse] Error:', error);
     return NextResponse.json(
-      { error: error.message || 'Failed to process request' },
+      { error: `Failed to parse PDF: ${error.message || 'Unknown error'}` },
       { status: 500 },
     );
   }

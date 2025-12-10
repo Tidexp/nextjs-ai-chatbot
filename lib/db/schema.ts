@@ -77,6 +77,27 @@ export const instructorNote = pgTable('InstructorNote', {
 
 export type InstructorNote = InferSelectModel<typeof instructorNote>;
 
+// Junction table to link instructor chats with sources
+export const instructorChatSource = pgTable(
+  'InstructorChatSource',
+  {
+    chatId: uuid('chatId')
+      .notNull()
+      .references(() => chat.id, { onDelete: 'cascade' }),
+    sourceId: uuid('sourceId')
+      .notNull()
+      .references(() => instructorSource.id, { onDelete: 'cascade' }),
+    addedAt: timestamp('addedAt').notNull().defaultNow(),
+  },
+  (table) => ({
+    pk: primaryKey({ columns: [table.chatId, table.sourceId] }),
+  }),
+);
+
+export type InstructorChatSource = InferSelectModel<
+  typeof instructorChatSource
+>;
+
 // DEPRECATED: The following schema is deprecated and will be removed in the future.
 // Read the migration guide at https://chat-sdk.dev/docs/migration-guides/message-parts
 export const messageDeprecated = pgTable('Message', {

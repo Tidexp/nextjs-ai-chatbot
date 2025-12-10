@@ -87,6 +87,8 @@
     "openai-edge": "^1.2.2",
     "orderedmap": "^2.1.1",
     "papaparse": "^5.5.2",
+    "pdf-lib": "^1.17.1",
+    "pdf-parse": "1.1.1",
     "pdf2json": "^4.0.0",
     "pdfjs-dist": "^4.6.82",
     "pgvector": "^0.2.1",

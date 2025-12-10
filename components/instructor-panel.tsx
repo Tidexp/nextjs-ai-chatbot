@@ -169,11 +169,17 @@ export function InstructorPanel({
   const [selectedNote, setSelectedNote] = React.useState<InstructorNote | null>(
     null,
   );
+  const [notesSearch, setNotesSearch] = React.useState('');
+  const [notesMatchIndex, setNotesMatchIndex] = React.useState(0);
   const instructorChatId = React.useMemo(
     () => chatId || generateUUID(),
     [chatId],
   );
   const fileInputRef = React.useRef<HTMLInputElement | null>(null);
+  const notesContentRef = React.useRef<HTMLDivElement | null>(null);
+  const viewerContentRef = React.useRef<HTMLDivElement | null>(null);
+  const [viewerSearch, setViewerSearch] = React.useState('');
+  const [viewerMatchIndex, setViewerMatchIndex] = React.useState(0);
   const [isGoogleApiLoaded, setIsGoogleApiLoaded] = React.useState(false);
   const [showAddSourceModal, setShowAddSourceModal] = React.useState(false);
   const [showPasteModal, setShowPasteModal] = React.useState(false);
@@ -202,6 +208,160 @@ export function InstructorPanel({
   React.useEffect(() => {
     loadSourcesFromAPI().then(setSources);
   }, []);
+
+  // Note search matches
+  const noteMatches = React.useMemo(() => {
+    if (!selectedNote || !notesSearch.trim())
+      return [] as Array<{ index: number; length: number }>;
+    const safe = notesSearch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const regex = new RegExp(safe, 'gi');
+    const matches: Array<{ index: number; length: number }> = [];
+    while (true) {
+      const match = regex.exec(selectedNote.content);
+      if (!match) break;
+      matches.push({ index: match.index, length: match[0].length });
+      if (regex.lastIndex === match.index) regex.lastIndex += 1; // avoid zero-length loops
+    }
+    return matches;
+  }, [notesSearch, selectedNote]);
+
+  // Viewer search matches
+  const viewerMatches = React.useMemo(() => {
+    if (!viewingSource || !viewerSearch.trim())
+      return [] as Array<{ index: number; length: number }>;
+    const safe = viewerSearch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const regex = new RegExp(safe, 'gi');
+    const content = viewingSource.content || '';
+    const matches: Array<{ index: number; length: number }> = [];
+    while (true) {
+      const match = regex.exec(content);
+      if (!match) break;
+      matches.push({ index: match.index, length: match[0].length });
+      if (regex.lastIndex === match.index) regex.lastIndex += 1;
+    }
+    return matches;
+  }, [viewerSearch, viewingSource]);
+
+  // Scroll to current note match
+  React.useEffect(() => {
+    if (!noteMatches.length) return;
+    const el = notesContentRef.current?.querySelector(
+      `[data-note-match="${notesMatchIndex}"]`,
+    ) as HTMLElement | null;
+    el?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }, [notesMatchIndex, noteMatches.length]);
+
+  // Scroll to current viewer match
+  React.useEffect(() => {
+    if (!viewerMatches.length) return;
+    const el = viewerContentRef.current?.querySelector(
+      `[data-viewer-match="${viewerMatchIndex}"]`,
+    ) as HTMLElement | null;
+    el?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }, [viewerMatchIndex, viewerMatches.length]);
+
+  // Keep indices in range when match sets change
+  React.useEffect(() => {
+    if (!noteMatches.length) {
+      setNotesMatchIndex(0);
+      return;
+    }
+    if (notesMatchIndex >= noteMatches.length) {
+      setNotesMatchIndex(noteMatches.length - 1);
+    }
+  }, [noteMatches.length, notesMatchIndex]);
+
+  React.useEffect(() => {
+    if (!viewerMatches.length) {
+      setViewerMatchIndex(0);
+      return;
+    }
+    if (viewerMatchIndex >= viewerMatches.length) {
+      setViewerMatchIndex(viewerMatches.length - 1);
+    }
+  }, [viewerMatches.length, viewerMatchIndex]);
+
+  const goToNextNoteMatch = React.useCallback(() => {
+    if (!noteMatches.length) return;
+    setNotesMatchIndex((idx) => (idx + 1) % noteMatches.length);
+  }, [noteMatches.length]);
+
+  const goToPrevNoteMatch = React.useCallback(() => {
+    if (!noteMatches.length) return;
+    setNotesMatchIndex(
+      (idx) => (idx - 1 + noteMatches.length) % noteMatches.length,
+    );
+  }, [noteMatches.length]);
+
+  const goToNextViewerMatch = React.useCallback(() => {
+    if (!viewerMatches.length) return;
+    setViewerMatchIndex((idx) => (idx + 1) % viewerMatches.length);
+  }, [viewerMatches.length]);
+
+  const goToPrevViewerMatch = React.useCallback(() => {
+    if (!viewerMatches.length) return;
+    setViewerMatchIndex(
+      (idx) => (idx - 1 + viewerMatches.length) % viewerMatches.length,
+    );
+  }, [viewerMatches.length]);
+
+  const renderHighlightedContent = React.useCallback(
+    (
+      content: string,
+      matches: Array<{ index: number; length: number }>,
+      currentIndex: number,
+      kind: 'note-match' | 'viewer-match',
+    ) => {
+      if (!matches.length) return content;
+      const nodes: React.ReactNode[] = [];
+      let last = 0;
+      matches.forEach((m, i) => {
+        if (m.index > last) {
+          nodes.push(
+            <span key={`${kind}-text-${m.index}`}>
+              {content.slice(last, m.index)}
+            </span>,
+          );
+        }
+        const spanProps =
+          kind === 'note-match'
+            ? { 'data-note-match': i }
+            : { 'data-viewer-match': i };
+        const isCurrent = i === currentIndex;
+        nodes.push(
+          <mark
+            key={`${kind}-match-${m.index}-${m.length}`}
+            {...spanProps}
+            className={
+              isCurrent
+                ? 'bg-yellow-300 text-foreground rounded px-0.5 font-semibold'
+                : 'bg-yellow-200/50 text-foreground rounded px-0.5'
+            }
+          >
+            {content.slice(m.index, m.index + m.length)}
+          </mark>,
+        );
+        last = m.index + m.length;
+      });
+      if (last < content.length) {
+        nodes.push(<span key={`${kind}-tail`}>{content.slice(last)}</span>);
+      }
+      return nodes;
+    },
+    [],
+  );
+
+  // Reset note search when changing note
+  React.useEffect(() => {
+    setNotesSearch('');
+    setNotesMatchIndex(0);
+  }, [selectedNote]);
+
+  // Reset source viewer search when opening a source
+  React.useEffect(() => {
+    setViewerSearch('');
+    setViewerMatchIndex(0);
+  }, [viewingSource]);
 
   // Handle resize for sources panel
   React.useEffect(() => {
@@ -2015,10 +2175,89 @@ export function InstructorPanel({
                 ✕
               </Button>
             </div>
-            <div className="flex-1 overflow-auto p-4">
-              <pre className="whitespace-pre-wrap text-sm font-mono">
-                {selectedNote.content}
-              </pre>
+            {/* Search Bar */}
+            <div className="px-4 py-3 border-b bg-muted/30 flex items-center gap-2">
+              <svg
+                className="w-4 h-4 text-muted-foreground flex-shrink-0"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
+                />
+              </svg>
+              <input
+                type="text"
+                placeholder="Search note content..."
+                value={notesSearch}
+                onChange={(e) => setNotesSearch(e.target.value)}
+                className="flex-1 bg-transparent border-0 text-sm focus:outline-none"
+              />
+              <div className="flex items-center gap-1 text-xs text-muted-foreground">
+                <span className="w-12 text-right">
+                  {noteMatches.length
+                    ? `${notesMatchIndex + 1}/${noteMatches.length}`
+                    : '0/0'}
+                </span>
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="ghost"
+                  className="h-7 w-7"
+                  onClick={goToPrevNoteMatch}
+                  disabled={!noteMatches.length}
+                  title="Previous match"
+                >
+                  ↑
+                </Button>
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="ghost"
+                  className="h-7 w-7"
+                  onClick={goToNextNoteMatch}
+                  disabled={!noteMatches.length}
+                  title="Next match"
+                >
+                  ↓
+                </Button>
+              </div>
+              {notesSearch && (
+                <button
+                  type="button"
+                  onClick={() => setNotesSearch('')}
+                  className="text-xs text-muted-foreground hover:text-foreground"
+                >
+                  ✕
+                </button>
+              )}
+            </div>
+            {/* Content with search highlighting */}
+            <div className="flex-1 overflow-auto p-4" ref={notesContentRef}>
+              {notesSearch ? (
+                noteMatches.length ? (
+                  <div className="text-sm leading-relaxed whitespace-pre-wrap font-sans">
+                    {renderHighlightedContent(
+                      selectedNote.content,
+                      noteMatches,
+                      notesMatchIndex,
+                      'note-match',
+                    )}
+                  </div>
+                ) : (
+                  <div className="text-sm leading-relaxed whitespace-pre-wrap font-sans text-muted-foreground italic">
+                    {selectedNote.content}
+                  </div>
+                )
+              ) : (
+                <div className="text-sm leading-relaxed whitespace-pre-wrap font-sans">
+                  {selectedNote.content}
+                </div>
+              )}
             </div>
             <div className="flex items-center justify-between p-4 border-t bg-muted/30">
               <span className="text-xs text-muted-foreground">
@@ -2152,11 +2391,93 @@ export function InstructorPanel({
               </button>
             </div>
 
+            {/* Search Bar for source viewer */}
+            <div className="px-6 py-3 border-b border-border bg-muted/20 flex items-center gap-2">
+              <svg
+                className="w-4 h-4 text-muted-foreground flex-shrink-0"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
+                />
+              </svg>
+              <input
+                type="text"
+                placeholder="Search source content..."
+                value={viewerSearch}
+                onChange={(e) => setViewerSearch(e.target.value)}
+                className="flex-1 bg-transparent border-0 text-sm focus:outline-none"
+              />
+              <div className="flex items-center gap-1 text-xs text-muted-foreground">
+                <span className="w-12 text-right">
+                  {viewerMatches.length
+                    ? `${viewerMatchIndex + 1}/${viewerMatches.length}`
+                    : '0/0'}
+                </span>
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="ghost"
+                  className="h-7 w-7"
+                  onClick={goToPrevViewerMatch}
+                  disabled={!viewerMatches.length}
+                  title="Previous match"
+                >
+                  ↑
+                </Button>
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="ghost"
+                  className="h-7 w-7"
+                  onClick={goToNextViewerMatch}
+                  disabled={!viewerMatches.length}
+                  title="Next match"
+                >
+                  ↓
+                </Button>
+              </div>
+              {viewerSearch && (
+                <button
+                  type="button"
+                  onClick={() => setViewerSearch('')}
+                  className="text-xs text-muted-foreground hover:text-foreground"
+                >
+                  ✕
+                </button>
+              )}
+            </div>
+
             {/* Content */}
-            <div className="flex-1 overflow-y-auto px-6 py-4">
-              <pre className="whitespace-pre-wrap font-mono text-sm leading-relaxed">
-                {viewingSource.content || 'No content available'}
-              </pre>
+            <div
+              className="flex-1 overflow-y-auto px-6 py-4"
+              ref={viewerContentRef}
+            >
+              {viewerSearch ? (
+                viewerMatches.length ? (
+                  <div className="whitespace-pre-wrap font-sans text-sm leading-relaxed">
+                    {renderHighlightedContent(
+                      viewingSource.content || '',
+                      viewerMatches,
+                      viewerMatchIndex,
+                      'viewer-match',
+                    )}
+                  </div>
+                ) : (
+                  <div className="whitespace-pre-wrap font-sans text-sm leading-relaxed text-muted-foreground italic">
+                    {viewingSource.content || 'No content available'}
+                  </div>
+                )
+              ) : (
+                <div className="whitespace-pre-wrap font-sans text-sm leading-relaxed">
+                  {viewingSource.content || 'No content available'}
+                </div>
+              )}
             </div>
 
             {/* Footer with Actions */}

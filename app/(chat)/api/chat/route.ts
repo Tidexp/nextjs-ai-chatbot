@@ -359,46 +359,42 @@ export async function POST(request: Request) {
     }
 
     // Save chat and new messages (chat first due to foreign key)
-    // Skip saving for instructor mode
     const isInstructorChatType = chatType === 'instructor';
+    const isNewChat = !chat;
 
-    if (!isInstructorChatType) {
-      const isNewChat = !chat;
+    // Find NEW user messages that aren't in the database yet
+    const newUserMessages = uiMessages.filter(
+      (msg: any) => msg.role === 'user' && !existingMessageIds.has(msg.id),
+    );
 
-      // Find NEW user messages that aren't in the database yet
-      const newUserMessages = uiMessages.filter(
-        (msg: any) => msg.role === 'user' && !existingMessageIds.has(msg.id),
-      );
+    // Save chat first if it's new (required for foreign key constraint)
+    // Always save for instructor mode to enable notes/sources persistence
+    if (isNewChat) {
+      console.log(`[POST] Creating new chat: ${chatId} (type: ${chatType})`);
+      await saveChat({
+        id: chatId,
+        userId: session.user.id,
+        title: isInstructorChatType ? 'Instructor Chat' : 'New Chat',
+        visibility: 'private',
+        chatType,
+      });
+    }
 
-      // Save chat first if it's new (required for foreign key constraint)
-      if (isNewChat) {
-        console.log(`[POST] Creating new chat: ${chatId}`);
-        await saveChat({
-          id: chatId,
-          userId: session.user.id,
-          title: 'New Chat',
-          visibility: 'private',
-          chatType,
-        });
-      }
-
-      // Now save messages (chat must exist first)
-      if (newUserMessages.length > 0) {
-        console.log(
-          `[POST] Saving ${newUserMessages.length} new user messages`,
-        );
-        await saveMessages({
-          messages: newUserMessages.map((msg: any) => ({
-            chatId,
-            id: msg.id,
-            role: 'user',
-            parts: msg.parts || [],
-            attachments: [],
-            createdAt: new Date(),
-          })),
-        });
-      }
-    } else {
+    // Now save messages (chat must exist first)
+    // Skip message saving for instructor mode to keep it lightweight
+    if (!isInstructorChatType && newUserMessages.length > 0) {
+      console.log(`[POST] Saving ${newUserMessages.length} new user messages`);
+      await saveMessages({
+        messages: newUserMessages.map((msg: any) => ({
+          chatId,
+          id: msg.id,
+          role: 'user',
+          parts: msg.parts || [],
+          attachments: [],
+          createdAt: new Date(),
+        })),
+      });
+    } else if (isInstructorChatType) {
       console.log('[POST] Skipping message storage for instructor mode');
     }
 

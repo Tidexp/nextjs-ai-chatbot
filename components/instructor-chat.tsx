@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useRef, useState, useEffect } from 'react';
 import { useSession } from 'next-auth/react';
 import type { ChatStatus } from 'ai';
 
@@ -33,6 +33,41 @@ export function InstructorChat({
   const [input, setInput] = useState('');
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const sourcesSyncedRef = useRef<Set<string>>(new Set());
+
+  // Sync enabled sources with the chat in the database
+  useEffect(() => {
+    const syncSourcesToChat = async () => {
+      const enabledIds = Array.from(enabledSourceIds);
+      // Filter out temporary upload IDs (they start with "upload-")
+      // Only sync real UUID sources that are saved to the database
+      const validSourceIds = enabledIds.filter(
+        (id) => !id.startsWith('upload-') && !sourcesSyncedRef.current.has(id),
+      );
+
+      if (validSourceIds.length === 0) return;
+
+      try {
+        for (const sourceId of validSourceIds) {
+          try {
+            await fetch('/api/instructor-chat-sources', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ chatId, sourceId }),
+            });
+            sourcesSyncedRef.current.add(sourceId);
+          } catch (err) {
+            console.warn(`Failed to sync source ${sourceId}:`, err);
+            // Continue with other sources if one fails
+          }
+        }
+      } catch (error) {
+        console.error('Failed to sync sources with chat:', error);
+      }
+    };
+
+    syncSourcesToChat();
+  }, [enabledSourceIds, chatId]);
 
   const sendMessage = useCallback(
     async (message: any) => {

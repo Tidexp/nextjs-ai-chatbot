@@ -167,6 +167,12 @@
 
     body {
         @apply bg-background text-foreground;
+        font-family: 'Inter', 'Segoe UI', 'Helvetica Neue', Arial, 'Noto Sans', 'DejaVu Sans', sans-serif;
+    }
+
+    pre,
+    code {
+        font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', 'Menlo', 'DejaVu Sans Mono', monospace;
     }
 }
 

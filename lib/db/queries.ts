@@ -38,6 +38,9 @@ import {
   topicModule,
   instructorNote,
   type InstructorNote,
+  instructorChatSource,
+  instructorSource,
+  type InstructorSource,
   topicLesson,
   type TopicModule,
   type TopicLesson,
@@ -55,6 +58,13 @@ import { ChatSDKError } from '../errors';
 // biome-ignore lint: Forbidden non-null assertion.
 const client = postgres(process.env.POSTGRES_URL!);
 const db = drizzle(client);
+
+// Validate UUID format
+function isValidUUID(value: string): boolean {
+  const uuidRegex =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  return uuidRegex.test(value);
+}
 
 export async function getUser(email: string): Promise<Array<User>> {
   try {
@@ -370,6 +380,97 @@ export async function deleteInstructorNote({
   } catch (error) {
     console.error('Database error in deleteInstructorNote:', error);
     throw new ChatSDKError('bad_request:database', 'Failed to delete note');
+  }
+}
+
+export async function linkSourceToChat({
+  chatId,
+  sourceId,
+}: {
+  chatId: string;
+  sourceId: string;
+}): Promise<void> {
+  // Validate UUID format - reject temporary upload IDs
+  if (!isValidUUID(chatId) || !isValidUUID(sourceId)) {
+    throw new ChatSDKError(
+      'bad_request:database',
+      'Invalid chatId or sourceId format',
+    );
+  }
+
+  try {
+    await db
+      .insert(instructorChatSource)
+      .values({ chatId, sourceId })
+      .onConflictDoNothing(); // Ignore if already linked
+  } catch (error) {
+    console.error('Database error in linkSourceToChat:', error);
+    throw new ChatSDKError(
+      'bad_request:database',
+      'Failed to link source to chat',
+    );
+  }
+}
+
+export async function unlinkSourceFromChat({
+  chatId,
+  sourceId,
+}: {
+  chatId: string;
+  sourceId: string;
+}): Promise<void> {
+  // Validate UUID format
+  if (!isValidUUID(chatId) || !isValidUUID(sourceId)) {
+    throw new ChatSDKError(
+      'bad_request:database',
+      'Invalid chatId or sourceId format',
+    );
+  }
+
+  try {
+    await db
+      .delete(instructorChatSource)
+      .where(
+        and(
+          eq(instructorChatSource.chatId, chatId),
+          eq(instructorChatSource.sourceId, sourceId),
+        ),
+      );
+  } catch (error) {
+    console.error('Database error in unlinkSourceFromChat:', error);
+    throw new ChatSDKError(
+      'bad_request:database',
+      'Failed to unlink source from chat',
+    );
+  }
+}
+
+export async function getChatSources({
+  chatId,
+}: {
+  chatId: string;
+}): Promise<InstructorSource[]> {
+  try {
+    return await db
+      .selectDistinct()
+      .from(instructorChatSource)
+      .leftJoin(
+        instructorSource,
+        eq(instructorChatSource.sourceId, instructorSource.id),
+      )
+      .where(eq(instructorChatSource.chatId, chatId))
+      .then(
+        (results) =>
+          results
+            .map((r) => r.InstructorSource)
+            .filter((s) => s !== null) as InstructorSource[],
+      );
+  } catch (error) {
+    console.error('Database error in getChatSources:', error);
+    throw new ChatSDKError(
+      'bad_request:database',
+      'Failed to load chat sources',
+    );
   }
 }
 

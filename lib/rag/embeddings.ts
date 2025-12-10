@@ -174,18 +174,42 @@ export function estimateTokenCount(text: string): number {
 
 /**
  * Format context from relevant chunks for LLM
+ * Limits each chunk to 2000 characters and total context to 12000 characters
+ * to prevent exceeding API limits
  */
 export function formatContextForLLM(
   relevantChunks: Array<{ content: string; similarity: number; index: number }>,
+  maxChunkLength = 2000,
+  maxTotalLength = 12000,
 ): string {
   if (relevantChunks.length === 0) {
     return 'No relevant sources found.';
   }
 
-  return relevantChunks
-    .map(
-      (chunk, i) =>
-        `=== CHUNK ${i + 1} (Relevance: ${(chunk.similarity * 100).toFixed(0)}%) ===\n${chunk.content}\n=== END CHUNK ${i + 1} ===`,
-    )
-    .join('\n\n');
+  const formattedChunks: string[] = [];
+  let totalLength = 0;
+
+  for (let i = 0; i < relevantChunks.length; i++) {
+    const chunk = relevantChunks[i];
+    // Truncate chunk content if too long
+    const content =
+      chunk.content.length > maxChunkLength
+        ? `${chunk.content.slice(0, maxChunkLength)}... [truncated]`
+        : chunk.content;
+
+    const formatted = `=== CHUNK ${i + 1} (Relevance: ${(chunk.similarity * 100).toFixed(0)}%) ===\n${content}\n=== END CHUNK ${i + 1} ===`;
+
+    // Check if adding this chunk would exceed total limit
+    if (totalLength + formatted.length > maxTotalLength && i > 0) {
+      formattedChunks.push(
+        `\n[Additional ${relevantChunks.length - i} chunk(s) omitted to stay within limits]`,
+      );
+      break;
+    }
+
+    formattedChunks.push(formatted);
+    totalLength += formatted.length + 2; // +2 for \n\n separator
+  }
+
+  return formattedChunks.join('\n\n');
 }
