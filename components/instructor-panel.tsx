@@ -229,6 +229,9 @@ export function InstructorPanel({
   const [viewingSource, setViewingSource] =
     React.useState<SourceItemWithContent | null>(null);
   const viewerContentRef = React.useRef<HTMLDivElement | null>(null);
+  const [noteSearch, setNoteSearch] = React.useState('');
+  const [noteMatchIndex, setNoteMatchIndex] = React.useState(0);
+  const noteContentRef = React.useRef<HTMLDivElement | null>(null);
 
   // Initialize all sources as enabled when loaded
   React.useEffect(() => {
@@ -1469,36 +1472,27 @@ export function InstructorPanel({
 
     applyPickerStyles();
 
-    // Use Google Identity Services for OAuth
-    const tokenClient = window.google.accounts.oauth2.initTokenClient({
-      client_id: GOOGLE_CLIENT_ID,
-      scope: SCOPES,
-      callback: (response: any) => {
-        if (response.access_token || session?.accessToken) {
-          const token = response.access_token || session?.accessToken;
-
-          // Open picker with the access token
-          const picker = new window.google.picker.PickerBuilder()
-            .addView(window.google.picker.ViewId.DOCS)
-            .addView(window.google.picker.ViewId.DOCS_IMAGES)
-            .setOAuthToken(token)
-            .setDeveloperKey(GOOGLE_API_KEY)
-            .setAppId(GOOGLE_APP_ID)
-            .setCallback(handlePickerCallback)
-            .enableFeature(window.google.picker.Feature.MULTISELECT_ENABLED)
-            .build();
-
-          picker.setVisible(true);
-        }
-      },
-    });
-
-    // If user is already logged in with Google, use session token; otherwise request new token
-    if (session?.accessToken) {
-      tokenClient.callback({ access_token: session.accessToken });
-    } else {
-      tokenClient.requestAccessToken();
+    // Use the access token from the current session (from Google OAuth login)
+    // This ensures the picker uses the same Google account the user is logged in with
+    if (!session?.accessToken) {
+      console.error('[GooglePicker] No access token in session');
+      toast.error('Not authenticated with Google. Please sign in again.');
+      return;
     }
+
+    // Open picker directly with session's Google access token
+    // No account picker needed - uses the logged-in account
+    const picker = new window.google.picker.PickerBuilder()
+      .addView(window.google.picker.ViewId.DOCS)
+      .addView(window.google.picker.ViewId.DOCS_IMAGES)
+      .setOAuthToken(session.accessToken)
+      .setDeveloperKey(GOOGLE_API_KEY)
+      .setAppId(GOOGLE_APP_ID)
+      .setCallback(handlePickerCallback)
+      .enableFeature(window.google.picker.Feature.MULTISELECT_ENABLED)
+      .build();
+
+    picker.setVisible(true);
   };
 
   const viewerContent = viewingSource?.content || '';
@@ -1557,6 +1551,60 @@ export function InstructorPanel({
     if (!hasViewerMatches) return;
     setViewerMatchIndex((prev) =>
       prev - 1 < 0 ? viewerHighlight.count - 1 : prev - 1,
+    );
+  };
+
+  const noteContent = selectedNote?.content || '';
+
+  const noteHighlight = React.useMemo(() => {
+    if (!noteContent) {
+      return { html: escapeHtml('No content available'), count: 0 };
+    }
+    if (!noteSearch.trim()) {
+      return { html: escapeHtml(noteContent), count: 0 };
+    }
+
+    const regex = new RegExp(escapeRegExp(noteSearch.trim()), 'gi');
+    let hitIndex = 0;
+    const html = escapeHtml(noteContent).replace(regex, (match) => {
+      const marked = `<mark data-hit="${hitIndex}" class="bg-yellow-200 dark:bg-yellow-700 text-foreground px-0.5 rounded-sm">${match}</mark>`;
+      hitIndex += 1;
+      return marked;
+    });
+
+    return { html, count: hitIndex };
+  }, [noteContent, noteSearch]);
+
+  React.useEffect(() => {
+    setNoteMatchIndex(0);
+  }, [noteSearch, selectedNote?.id]);
+
+  React.useEffect(() => {
+    if (!selectedNote) {
+      setNoteSearch('');
+      setNoteMatchIndex(0);
+    }
+  }, [selectedNote?.id]);
+
+  React.useEffect(() => {
+    if (!selectedNote || noteHighlight.count === 0) return;
+    const target = noteContentRef.current?.querySelector<HTMLElement>(
+      `mark[data-hit="${noteMatchIndex}"]`,
+    );
+    if (target) {
+      target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  }, [noteHighlight, noteMatchIndex, selectedNote?.id]);
+
+  const hasNoteMatches = noteHighlight.count > 0;
+  const goToNextNoteMatch = () => {
+    if (!hasNoteMatches) return;
+    setNoteMatchIndex((prev) => (prev + 1) % noteHighlight.count);
+  };
+  const goToPrevNoteMatch = () => {
+    if (!hasNoteMatches) return;
+    setNoteMatchIndex((prev) =>
+      prev - 1 < 0 ? noteHighlight.count - 1 : prev - 1,
     );
   };
 
@@ -2356,26 +2404,107 @@ export function InstructorPanel({
 
       {/* Note View Modal */}
       {selectedNote && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-background rounded-lg shadow-lg max-w-3xl w-full max-h-[80vh] flex flex-col">
-            <div className="flex items-center justify-between p-4 border-b">
-              <h2 className="text-lg font-semibold truncate pr-4">
-                {selectedNote.title}
-              </h2>
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => setSelectedNote(null)}
-              >
-                ✕
-              </Button>
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+          onClick={() => setSelectedNote(null)}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') {
+              setSelectedNote(null);
+            }
+          }}
+          role="dialog"
+          aria-modal="true"
+        >
+          <div
+            className="bg-background rounded-lg shadow-2xl w-full max-w-4xl mx-4 max-h-[85vh] flex flex-col border border-border"
+            onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => e.stopPropagation()}
+            role="document"
+            tabIndex={-1}
+          >
+            {/* Header */}
+            <div className="flex items-center gap-4 px-6 py-4 border-b border-border bg-muted/30">
+              <div className="flex items-center gap-3 flex-1 min-w-0">
+                <div className="flex-1 min-w-0">
+                  <h2 className="text-lg font-semibold truncate">
+                    {selectedNote.title}
+                  </h2>
+                  <p className="text-xs text-muted-foreground">
+                    {selectedNote.content?.length || 0} characters
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 flex-shrink-0">
+                <div className="flex items-center gap-1 bg-muted rounded-md px-2 py-1">
+                  <input
+                    type="text"
+                    value={noteSearch}
+                    onChange={(e) => setNoteSearch(e.target.value)}
+                    placeholder="Search in note"
+                    className="bg-transparent text-sm outline-none w-40"
+                  />
+                  <div className="text-[11px] text-muted-foreground">
+                    {hasNoteMatches
+                      ? `${noteMatchIndex + 1}/${noteHighlight.count}`
+                      : '0/0'}
+                  </div>
+                </div>
+                <div className="flex items-center gap-1">
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    className="h-8 w-8"
+                    disabled={!hasNoteMatches}
+                    onClick={goToPrevNoteMatch}
+                    title="Previous match"
+                  >
+                    ↑
+                  </Button>
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    className="h-8 w-8"
+                    disabled={!hasNoteMatches}
+                    onClick={goToNextNoteMatch}
+                    title="Next match"
+                  >
+                    ↓
+                  </Button>
+                </div>
+                <button
+                  type="button"
+                  className="text-muted-foreground hover:text-foreground transition-colors rounded-full p-2 hover:bg-muted"
+                  onClick={() => setSelectedNote(null)}
+                  aria-label="Close"
+                >
+                  <svg
+                    className="w-5 h-5"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M6 18L18 6M6 6l12 12"
+                    />
+                  </svg>
+                </button>
+              </div>
             </div>
-            <div className="flex-1 overflow-auto p-4">
-              <pre className="whitespace-pre-wrap text-sm font-mono">
-                {selectedNote.content}
-              </pre>
+
+            {/* Content */}
+            <div className="flex-1 overflow-y-auto px-6 py-4">
+              <div
+                ref={noteContentRef}
+                className="text-sm whitespace-pre-wrap font-sans text-foreground/90 leading-relaxed"
+                dangerouslySetInnerHTML={{ __html: noteHighlight.html }}
+              />
             </div>
-            <div className="flex items-center justify-between p-4 border-t bg-muted/30">
+
+            {/* Footer */}
+            <div className="flex items-center justify-between p-4 border-t border-border bg-muted/30">
               <span className="text-xs text-muted-foreground">
                 {new Date(selectedNote.createdAt).toLocaleString()}
               </span>

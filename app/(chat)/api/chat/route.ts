@@ -381,7 +381,10 @@ export async function POST(request: Request) {
     }
 
     // Now save messages (chat must exist first)
-    // Skip message saving for instructor mode to keep it lightweight
+    // IMPORTANT: For instructor mode, messages are NOT saved to the database individually.
+    // Instead, messages are only persisted when the user explicitly creates a note via
+    // the "Store note" button, which saves them as InstructorNote records. This keeps
+    // instructor chat lightweight while allowing selective message archival.
     if (!isInstructorChatType && newUserMessages.length > 0) {
       console.log(`[POST] Saving ${newUserMessages.length} new user messages`);
       await saveMessages({
@@ -395,7 +398,9 @@ export async function POST(request: Request) {
         })),
       });
     } else if (isInstructorChatType) {
-      console.log('[POST] Skipping message storage for instructor mode');
+      console.log(
+        '[POST] Instructor mode: Messages skipped, will only store when user creates a note',
+      );
     }
 
     // Use the custom provider directly for streaming
