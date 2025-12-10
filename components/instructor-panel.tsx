@@ -51,6 +51,41 @@ interface InstructorNote {
   title: string;
 }
 
+const escapeHtml = (str: string) =>
+  str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+
+const escapeRegExp = (str: string) =>
+  str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+const mergeTextWithImages = (baseText: string, images: string[]) => {
+  if (images.length === 0) return baseText;
+  const paragraphs = baseText.split(/\n{2,}/);
+  const result: string[] = [];
+  let imageIdx = 0;
+
+  for (const para of paragraphs) {
+    if (para && para.trim().length > 0) {
+      result.push(para.trimEnd());
+    }
+    if (imageIdx < images.length) {
+      result.push(`--- Image ${imageIdx + 1} (OCR) ---\n${images[imageIdx]}`);
+      imageIdx++;
+    }
+  }
+
+  while (imageIdx < images.length) {
+    result.push(`--- Image ${imageIdx + 1} (OCR) ---\n${images[imageIdx]}`);
+    imageIdx++;
+  }
+
+  return result.join('\n\n').trim();
+};
+
 // API helper functions for database operations
 const loadSourcesFromAPI = async (): Promise<SourceItemWithContent[]> => {
   try {
@@ -169,17 +204,11 @@ export function InstructorPanel({
   const [selectedNote, setSelectedNote] = React.useState<InstructorNote | null>(
     null,
   );
-  const [notesSearch, setNotesSearch] = React.useState('');
-  const [notesMatchIndex, setNotesMatchIndex] = React.useState(0);
   const instructorChatId = React.useMemo(
     () => chatId || generateUUID(),
     [chatId],
   );
   const fileInputRef = React.useRef<HTMLInputElement | null>(null);
-  const notesContentRef = React.useRef<HTMLDivElement | null>(null);
-  const viewerContentRef = React.useRef<HTMLDivElement | null>(null);
-  const [viewerSearch, setViewerSearch] = React.useState('');
-  const [viewerMatchIndex, setViewerMatchIndex] = React.useState(0);
   const [isGoogleApiLoaded, setIsGoogleApiLoaded] = React.useState(false);
   const [showAddSourceModal, setShowAddSourceModal] = React.useState(false);
   const [showPasteModal, setShowPasteModal] = React.useState(false);
@@ -194,8 +223,12 @@ export function InstructorPanel({
   const [enabledSources, setEnabledSources] = React.useState<Set<string>>(
     new Set(),
   );
+  const [uploadingCount, setUploadingCount] = React.useState(0);
+  const [viewerSearch, setViewerSearch] = React.useState('');
+  const [viewerMatchIndex, setViewerMatchIndex] = React.useState(0);
   const [viewingSource, setViewingSource] =
     React.useState<SourceItemWithContent | null>(null);
+  const viewerContentRef = React.useRef<HTMLDivElement | null>(null);
 
   // Initialize all sources as enabled when loaded
   React.useEffect(() => {
@@ -208,160 +241,6 @@ export function InstructorPanel({
   React.useEffect(() => {
     loadSourcesFromAPI().then(setSources);
   }, []);
-
-  // Note search matches
-  const noteMatches = React.useMemo(() => {
-    if (!selectedNote || !notesSearch.trim())
-      return [] as Array<{ index: number; length: number }>;
-    const safe = notesSearch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const regex = new RegExp(safe, 'gi');
-    const matches: Array<{ index: number; length: number }> = [];
-    while (true) {
-      const match = regex.exec(selectedNote.content);
-      if (!match) break;
-      matches.push({ index: match.index, length: match[0].length });
-      if (regex.lastIndex === match.index) regex.lastIndex += 1; // avoid zero-length loops
-    }
-    return matches;
-  }, [notesSearch, selectedNote]);
-
-  // Viewer search matches
-  const viewerMatches = React.useMemo(() => {
-    if (!viewingSource || !viewerSearch.trim())
-      return [] as Array<{ index: number; length: number }>;
-    const safe = viewerSearch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const regex = new RegExp(safe, 'gi');
-    const content = viewingSource.content || '';
-    const matches: Array<{ index: number; length: number }> = [];
-    while (true) {
-      const match = regex.exec(content);
-      if (!match) break;
-      matches.push({ index: match.index, length: match[0].length });
-      if (regex.lastIndex === match.index) regex.lastIndex += 1;
-    }
-    return matches;
-  }, [viewerSearch, viewingSource]);
-
-  // Scroll to current note match
-  React.useEffect(() => {
-    if (!noteMatches.length) return;
-    const el = notesContentRef.current?.querySelector(
-      `[data-note-match="${notesMatchIndex}"]`,
-    ) as HTMLElement | null;
-    el?.scrollIntoView({ block: 'center', behavior: 'smooth' });
-  }, [notesMatchIndex, noteMatches.length]);
-
-  // Scroll to current viewer match
-  React.useEffect(() => {
-    if (!viewerMatches.length) return;
-    const el = viewerContentRef.current?.querySelector(
-      `[data-viewer-match="${viewerMatchIndex}"]`,
-    ) as HTMLElement | null;
-    el?.scrollIntoView({ block: 'center', behavior: 'smooth' });
-  }, [viewerMatchIndex, viewerMatches.length]);
-
-  // Keep indices in range when match sets change
-  React.useEffect(() => {
-    if (!noteMatches.length) {
-      setNotesMatchIndex(0);
-      return;
-    }
-    if (notesMatchIndex >= noteMatches.length) {
-      setNotesMatchIndex(noteMatches.length - 1);
-    }
-  }, [noteMatches.length, notesMatchIndex]);
-
-  React.useEffect(() => {
-    if (!viewerMatches.length) {
-      setViewerMatchIndex(0);
-      return;
-    }
-    if (viewerMatchIndex >= viewerMatches.length) {
-      setViewerMatchIndex(viewerMatches.length - 1);
-    }
-  }, [viewerMatches.length, viewerMatchIndex]);
-
-  const goToNextNoteMatch = React.useCallback(() => {
-    if (!noteMatches.length) return;
-    setNotesMatchIndex((idx) => (idx + 1) % noteMatches.length);
-  }, [noteMatches.length]);
-
-  const goToPrevNoteMatch = React.useCallback(() => {
-    if (!noteMatches.length) return;
-    setNotesMatchIndex(
-      (idx) => (idx - 1 + noteMatches.length) % noteMatches.length,
-    );
-  }, [noteMatches.length]);
-
-  const goToNextViewerMatch = React.useCallback(() => {
-    if (!viewerMatches.length) return;
-    setViewerMatchIndex((idx) => (idx + 1) % viewerMatches.length);
-  }, [viewerMatches.length]);
-
-  const goToPrevViewerMatch = React.useCallback(() => {
-    if (!viewerMatches.length) return;
-    setViewerMatchIndex(
-      (idx) => (idx - 1 + viewerMatches.length) % viewerMatches.length,
-    );
-  }, [viewerMatches.length]);
-
-  const renderHighlightedContent = React.useCallback(
-    (
-      content: string,
-      matches: Array<{ index: number; length: number }>,
-      currentIndex: number,
-      kind: 'note-match' | 'viewer-match',
-    ) => {
-      if (!matches.length) return content;
-      const nodes: React.ReactNode[] = [];
-      let last = 0;
-      matches.forEach((m, i) => {
-        if (m.index > last) {
-          nodes.push(
-            <span key={`${kind}-text-${m.index}`}>
-              {content.slice(last, m.index)}
-            </span>,
-          );
-        }
-        const spanProps =
-          kind === 'note-match'
-            ? { 'data-note-match': i }
-            : { 'data-viewer-match': i };
-        const isCurrent = i === currentIndex;
-        nodes.push(
-          <mark
-            key={`${kind}-match-${m.index}-${m.length}`}
-            {...spanProps}
-            className={
-              isCurrent
-                ? 'bg-yellow-300 text-foreground rounded px-0.5 font-semibold'
-                : 'bg-yellow-200/50 text-foreground rounded px-0.5'
-            }
-          >
-            {content.slice(m.index, m.index + m.length)}
-          </mark>,
-        );
-        last = m.index + m.length;
-      });
-      if (last < content.length) {
-        nodes.push(<span key={`${kind}-tail`}>{content.slice(last)}</span>);
-      }
-      return nodes;
-    },
-    [],
-  );
-
-  // Reset note search when changing note
-  React.useEffect(() => {
-    setNotesSearch('');
-    setNotesMatchIndex(0);
-  }, [selectedNote]);
-
-  // Reset source viewer search when opening a source
-  React.useEffect(() => {
-    setViewerSearch('');
-    setViewerMatchIndex(0);
-  }, [viewingSource]);
 
   // Handle resize for sources panel
   React.useEffect(() => {
@@ -656,10 +535,25 @@ export function InstructorPanel({
           console.log('[DOCX] Extracting images for OCR...');
           const JSZip = (await import('jszip')).default;
           const zip = await JSZip.loadAsync(arrayBuffer);
-          const imageFiles = Object.keys(zip.files).filter((name) =>
-            /word\/media\/image\d+\.(png|jpg|jpeg|gif|bmp)$/i.test(name),
+
+          // List all files in DOCX for debugging
+          const allFiles = Object.keys(zip.files);
+          console.log(`[DOCX] Total files in DOCX: ${allFiles.length}`);
+          console.log(
+            `[DOCX] Files:`,
+            allFiles.filter((f) => f.includes('media') || f.includes('image')),
           );
 
+          // Look for images in multiple possible locations with flexible naming
+          const imageFiles = allFiles
+            .filter(
+              (name) =>
+                /\.(png|jpg|jpeg|gif|bmp|tiff|webp)$/i.test(name) &&
+                (name.includes('media') || name.includes('image')),
+            )
+            .sort(); // sort for stable, approximate document order
+
+          console.log(`[DOCX] Found ${imageFiles.length} image files`);
           if (imageFiles.length > 0) {
             console.log(`[DOCX] Found ${imageFiles.length} embedded images`);
             const imageTexts: string[] = [];
@@ -681,11 +575,17 @@ export function InstructorPanel({
                   if (ocrResponse.ok) {
                     const { text } = await ocrResponse.json();
                     if (text && text.trim().length > 0) {
-                      imageTexts.push(`\n\n[Image ${i + 1} Text]:\n${text}`);
+                      imageTexts.push(text);
                       console.log(
                         `[DOCX] Extracted ${text.length} chars from image ${i + 1}`,
                       );
                     }
+                  } else {
+                    console.error(
+                      `[DOCX] OCR failed for image ${i + 1}:`,
+                      ocrResponse.status,
+                      await ocrResponse.text(),
+                    );
                   }
                 }
               } catch (imgError) {
@@ -696,17 +596,16 @@ export function InstructorPanel({
               }
             }
 
-            // Append image texts to main document text
             if (imageTexts.length > 0) {
-              const combinedText = `${fullText}\n\n=== TEXT FROM EMBEDDED IMAGES ===${imageTexts.join('')}`;
+              const merged = mergeTextWithImages(fullText, imageTexts);
               console.log(
-                `[DOCX] Total extracted: ${combinedText.length} chars (${fullText.length} from text, ${combinedText.length - fullText.length} from OCR)`,
+                `[DOCX] Merged text + OCR length: ${merged.length} (text: ${fullText.length}, OCR: ${merged.length - fullText.length})`,
               );
-              return combinedText;
+              return merged || '[No text extracted from DOCX]';
             }
           }
 
-          return fullText;
+          return fullText || '[No text extracted from DOCX]';
         } catch (err) {
           console.error('[DOCX] Failed to parse DOCX:', err);
           console.error(
@@ -719,14 +618,17 @@ export function InstructorPanel({
       // XLSX parsing via xlsx (SheetJS) — flatten all sheets to plain text
       if (
         file.name.toLowerCase().endsWith('.xlsx') ||
-        file.name.toLowerCase().endsWith('.xls')
+        file.type ===
+          'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
       ) {
         try {
           const arrayBuffer = await file.arrayBuffer();
           const XLSX = await import('xlsx');
           const wb = XLSX.read(arrayBuffer, { type: 'array' });
+          const sheetNames = wb.SheetNames;
           const parts: string[] = [];
-          for (const sheetName of wb.SheetNames) {
+
+          for (const sheetName of sheetNames) {
             const sheet = wb.Sheets[sheetName];
             const rows = XLSX.utils.sheet_to_json(sheet, {
               header: 1,
@@ -753,9 +655,10 @@ export function InstructorPanel({
           const arrayBuffer = await file.arrayBuffer();
           const pdfjsLib = await import('pdfjs-dist');
 
-          // Set worker to empty blob to disable it completely
+          // Set worker source to use the bundled worker from pdfjs-dist
+          // The worker file is served from the public directory
           // @ts-ignore
-          pdfjsLib.GlobalWorkerOptions.workerSrc = '';
+          pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs';
 
           // @ts-ignore
           const loadingTask = pdfjsLib.getDocument({
@@ -857,14 +760,33 @@ export function InstructorPanel({
 
   const onFilesSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
-    const newSources: SourceItemWithContent[] = [];
 
     for (const f of files) {
+      const type = detectType(f);
+      const tempId = `upload-${f.name}-${Date.now()}-${Math.random()
+        .toString(36)
+        .slice(2, 8)}`;
+
+      const tempSource: SourceItemWithContent = {
+        id: tempId,
+        title: f.name,
+        type,
+        excerpt: 'Preparing file for upload...'
+          .slice(0, 200)
+          .replace(/\s+/g, ' ')
+          .trim(),
+        metadata: { fileName: f.name, fileSize: f.size, fileType: f.type },
+      };
+
+      setLoadingSources((prev) => new Set(prev).add(tempId));
+      setSources((prev) => [tempSource, ...prev]);
+      setUploadingCount((prev) => prev + 1);
+      let replaced = false;
+
       try {
         console.log(
           `[Upload] Processing file: ${f.name} (${f.type}, ${f.size} bytes)`,
         );
-        const type = detectType(f);
         const content = await readFileContent(f);
         console.log(
           `[Upload] readFileContent done for ${f.name}, length: ${content?.length || 0}`,
@@ -907,11 +829,28 @@ export function InstructorPanel({
           },
         );
         console.log(`[Upload] Saved source ${savedSource.id} for ${f.name}`);
-        newSources.push(savedSource);
-        // Add to sources immediately so user sees it right away
-        setSources((prev) => [savedSource, ...prev]);
+        // Replace placeholder with saved source so user sees progress immediately
+        setSources((prev) =>
+          prev.map((s) => (s.id === tempId ? savedSource : s)),
+        );
+        replaced = true;
+        setLoadingSources((prev) => {
+          const next = new Set(prev);
+          next.delete(tempId);
+          return next;
+        });
       } catch (error) {
         console.error(`Failed to upload ${f.name}:`, error);
+      } finally {
+        setUploadingCount((prev) => Math.max(0, prev - 1));
+        if (!replaced) {
+          setSources((prev) => prev.filter((s) => s.id !== tempId));
+        }
+        setLoadingSources((prev) => {
+          const next = new Set(prev);
+          next.delete(tempId);
+          return next;
+        });
       }
     }
 
@@ -980,6 +919,25 @@ export function InstructorPanel({
           type = 'code';
         }
 
+        const tempId = `drive-upload-${doc.id}-${Date.now()}-${Math.random()
+          .toString(36)
+          .slice(2, 8)}`;
+        const tempSource: SourceItemWithContent = {
+          id: tempId,
+          title: doc.name,
+          type,
+          excerpt: 'Fetching from Google Drive...'
+            .slice(0, 200)
+            .replace(/\s+/g, ' ')
+            .trim(),
+          metadata: { driveId: doc.id, mimeType },
+        };
+
+        setUploadingCount((prev) => prev + 1);
+        setLoadingSources((prev) => new Set(prev).add(tempId));
+        setSources((prev) => [tempSource, ...prev]);
+        let replaced = false;
+
         // Fetch file content for all text-based files
         let content = '';
         let exportUrl = `https://www.googleapis.com/drive/v3/files/${doc.id}?alt=media`;
@@ -996,9 +954,63 @@ export function InstructorPanel({
           type = 'markdown';
         }
 
-        // Fetch full content for RAG embedding (for text-based files and PDFs)
+        // Fetch full content for RAG embedding (for text-based files, PDFs, and images)
         let excerpt = `${type.toUpperCase()} from Google Drive`;
-        if (type !== 'image') {
+        if (type === 'image') {
+          // For images, fetch and run OCR
+          try {
+            console.log(`[Google Drive] Processing image: ${doc.name}`);
+            const response = await fetch(exportUrl, {
+              headers: {
+                Authorization: `Bearer ${session?.accessToken}`,
+              },
+            });
+
+            if (response.ok) {
+              const arrayBuffer = await response.arrayBuffer();
+              const base64 = btoa(
+                new Uint8Array(arrayBuffer).reduce(
+                  (data, byte) => data + String.fromCharCode(byte),
+                  '',
+                ),
+              );
+
+              console.log(`[Google Drive] Running OCR on ${doc.name}...`);
+              const ocrResponse = await fetch('/api/ocr', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ imageBase64: base64 }),
+              });
+
+              if (ocrResponse.ok) {
+                const { text, language } = await ocrResponse.json();
+                content = text || '[No text found in image]';
+                excerpt = content.slice(0, 200).replace(/\s+/g, ' ').trim();
+                console.log(
+                  `[Google Drive] OCR extracted ${text.length} chars from ${doc.name}${language ? ` (${language})` : ''}`,
+                );
+              } else {
+                console.error(
+                  '[Google Drive] OCR failed:',
+                  ocrResponse.status,
+                  await ocrResponse.text(),
+                );
+                content = '[OCR processing failed]';
+                excerpt = 'OCR failed';
+              }
+            } else {
+              console.error(
+                `[Google Drive] Failed to fetch image: ${response.status}`,
+              );
+              content = '[Failed to fetch image]';
+              excerpt = 'Fetch failed';
+            }
+          } catch (error) {
+            console.error('[Google Drive] Image OCR error:', error);
+            content = '[Image OCR error]';
+            excerpt = 'OCR error';
+          }
+        } else {
           try {
             const response = await fetch(exportUrl, {
               headers: {
@@ -1046,7 +1058,7 @@ export function InstructorPanel({
                 mimeType ===
                   'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
               ) {
-                // For DOCX, parse with mammoth
+                // For DOCX, parse with mammoth and extract images for OCR
                 console.log(`[Google Drive] Processing DOCX: ${doc.name}`);
                 const arrayBuffer = await response.arrayBuffer();
                 try {
@@ -1054,10 +1066,98 @@ export function InstructorPanel({
                   const textResult = await mammoth.extractRawText({
                     arrayBuffer,
                   });
-                  content = textResult.value || '[No text extracted from DOCX]';
+                  let fullText = textResult.value || '';
+
+                  console.log(
+                    `[Google Drive] Mammoth extracted ${fullText.length} chars from DOCX ${doc.name}`,
+                  );
+
+                  // Extract images and run OCR on them
+                  console.log('[Google Drive] Extracting images for OCR...');
+                  const JSZip = (await import('jszip')).default;
+                  const zip = await JSZip.loadAsync(arrayBuffer);
+
+                  // List all files for debugging
+                  const allFiles = Object.keys(zip.files);
+                  console.log(
+                    `[Google Drive] Total files in DOCX: ${allFiles.length}`,
+                  );
+                  console.log(
+                    `[Google Drive] Files:`,
+                    allFiles.filter(
+                      (f) => f.includes('media') || f.includes('image'),
+                    ),
+                  );
+
+                  // Look for images with flexible naming
+                  const imageFiles = allFiles
+                    .filter(
+                      (name) =>
+                        /\.(png|jpg|jpeg|gif|bmp|tiff|webp)$/i.test(name) &&
+                        (name.includes('media') || name.includes('image')),
+                    )
+                    .sort(); // sort for stable, approximate document order
+
+                  console.log(
+                    `[Google Drive] Found ${imageFiles.length} image files`,
+                  );
+                  if (imageFiles.length > 0) {
+                    const imageTexts: string[] = [];
+
+                    for (let i = 0; i < imageFiles.length; i++) {
+                      const imgFile = imageFiles[i];
+                      try {
+                        const imgData = await zip
+                          .file(imgFile)
+                          ?.async('base64');
+                        if (imgData) {
+                          console.log(
+                            `[Google Drive] Running OCR on image ${i + 1}/${imageFiles.length}...`,
+                          );
+                          const ocrResponse = await fetch('/api/ocr', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ imageBase64: imgData }),
+                          });
+
+                          if (ocrResponse.ok) {
+                            const { text } = await ocrResponse.json();
+                            if (text && text.trim().length > 0) {
+                              imageTexts.push(text);
+                              console.log(
+                                `[Google Drive] Extracted ${text.length} chars from image ${i + 1}`,
+                              );
+                            }
+                          } else {
+                            console.error(
+                              `[Google Drive] OCR failed for image ${i + 1}:`,
+                              ocrResponse.status,
+                              await ocrResponse.text(),
+                            );
+                          }
+                        }
+                      } catch (imgError) {
+                        console.error(
+                          `[Google Drive] Failed to process image ${i + 1}:`,
+                          imgError,
+                        );
+                      }
+                    }
+
+                    // Interleave image text with document text to keep natural order
+                    if (imageTexts.length > 0) {
+                      const merged = mergeTextWithImages(fullText, imageTexts);
+                      console.log(
+                        `[Google Drive] Merged text + OCR length: ${merged.length} (text: ${fullText.length}, OCR: ${merged.length - fullText.length})`,
+                      );
+                      fullText = merged;
+                    }
+                  }
+
+                  content = fullText || '[No text extracted from DOCX]';
                   excerpt = content.slice(0, 200).replace(/\s+/g, ' ').trim();
                   console.log(
-                    `[Google Drive] Extracted ${content.length} chars from DOCX ${doc.name}`,
+                    `[Google Drive] Final content: ${content.length} chars from ${doc.name}`,
                   );
                   console.log(
                     `[Google Drive] DOCX Preview: ${content.substring(0, 300)}`,
@@ -1099,6 +1199,16 @@ export function InstructorPanel({
         // Store Google Drive file reference with full content for RAG
         const driveFileUrl = `https://drive.google.com/file/d/${doc.id}/view`;
 
+        console.log(
+          `[Google Drive] Saving to DB - content length: ${content.length} chars`,
+        );
+        console.log(
+          `[Google Drive] Content preview (first 200 chars): ${content.substring(0, 200)}`,
+        );
+        console.log(
+          `[Google Drive] Content preview (last 200 chars): ${content.substring(content.length - 200)}`,
+        );
+
         try {
           const savedSource = await saveSourceToAPI(
             {
@@ -1127,10 +1237,28 @@ export function InstructorPanel({
             },
           );
           items.push(savedSource);
-          // Add to sources immediately so user sees it right away
-          setSources((prev) => [savedSource, ...prev]);
+          // Replace placeholder with saved source so user sees progress immediately
+          setSources((prev) =>
+            prev.map((s) => (s.id === tempId ? savedSource : s)),
+          );
+          replaced = true;
+          setLoadingSources((prev) => {
+            const next = new Set(prev);
+            next.delete(tempId);
+            return next;
+          });
         } catch (error) {
           console.error(`Failed to save ${doc.name}:`, error);
+        } finally {
+          setUploadingCount((prev) => Math.max(0, prev - 1));
+          if (!replaced) {
+            setSources((prev) => prev.filter((s) => s.id !== tempId));
+          }
+          setLoadingSources((prev) => {
+            const next = new Set(prev);
+            next.delete(tempId);
+            return next;
+          });
         }
       }
 
@@ -1373,6 +1501,65 @@ export function InstructorPanel({
     }
   };
 
+  const viewerContent = viewingSource?.content || '';
+
+  const viewerHighlight = React.useMemo(() => {
+    if (!viewerContent) {
+      return { html: escapeHtml('No content available'), count: 0 };
+    }
+    if (!viewerSearch.trim()) {
+      return { html: escapeHtml(viewerContent), count: 0 };
+    }
+
+    const regex = new RegExp(escapeRegExp(viewerSearch.trim()), 'gi');
+    let hitIndex = 0;
+    const html = escapeHtml(viewerContent).replace(regex, (match) => {
+      const marked = `<mark data-hit="${hitIndex}" class="bg-yellow-200 dark:bg-yellow-700 text-foreground px-0.5 rounded-sm">${match}</mark>`;
+      hitIndex += 1;
+      return marked;
+    });
+
+    return { html, count: hitIndex };
+  }, [viewerContent, viewerSearch]);
+
+  React.useEffect(() => {
+    setViewerMatchIndex(0);
+  }, [viewerSearch, viewingSource?.id]);
+
+  React.useEffect(() => {
+    if (!viewingSource) {
+      setViewerSearch('');
+      setViewerMatchIndex(0);
+    }
+  }, [viewingSource?.id]);
+
+  React.useEffect(() => {
+    if (!viewingSource || viewerHighlight.count === 0) return;
+    const target = viewerContentRef.current?.querySelector<HTMLElement>(
+      `mark[data-hit="${viewerMatchIndex}"]`,
+    );
+    if (target) {
+      target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  }, [viewerHighlight, viewerMatchIndex, viewingSource?.id]);
+
+  const hasViewerMatches = viewerHighlight.count > 0;
+  const closeViewer = () => {
+    setViewingSource(null);
+    setViewerSearch('');
+    setViewerMatchIndex(0);
+  };
+  const goToNextMatch = () => {
+    if (!hasViewerMatches) return;
+    setViewerMatchIndex((prev) => (prev + 1) % viewerHighlight.count);
+  };
+  const goToPrevMatch = () => {
+    if (!hasViewerMatches) return;
+    setViewerMatchIndex((prev) =>
+      prev - 1 < 0 ? viewerHighlight.count - 1 : prev - 1,
+    );
+  };
+
   return (
     <div className="flex flex-col h-dvh w-full overflow-hidden bg-background">
       <div className="flex items-center justify-between px-4 py-3 border-b">
@@ -1395,10 +1582,18 @@ export function InstructorPanel({
             className="flex-shrink-0 space-y-3 flex flex-col overflow-hidden relative border rounded-md p-3"
             style={{ width: `${sourcesWidth}px` }}
           >
-            <div className="flex items-center justify-between flex-shrink-0">
-              <h2 className="text-sm font-medium uppercase tracking-wide text-muted-foreground">
-                Sources
-              </h2>
+            <div className="flex items-center justify-between flex-shrink-0 gap-2">
+              <div className="flex items-center gap-2">
+                <h2 className="text-sm font-medium uppercase tracking-wide text-muted-foreground">
+                  Sources
+                </h2>
+                {uploadingCount > 0 && (
+                  <div className="flex items-center gap-1 text-xs text-blue-600 dark:text-blue-400">
+                    <div className="w-3 h-3 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+                    <span>Uploading {uploadingCount}</span>
+                  </div>
+                )}
+              </div>
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Button
@@ -1595,7 +1790,7 @@ export function InstructorPanel({
                 className="hidden"
                 multiple
                 onChange={onFilesSelected}
-                accept=".md,.txt,.js,.ts,application/pdf,image/*,text/*"
+                accept=".md,.txt,.js,.ts,.docx,.xlsx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,image/*,text/*"
               />
               {/* Modal for Add Source options */}
               {showAddSourceModal && (
@@ -2175,89 +2370,10 @@ export function InstructorPanel({
                 ✕
               </Button>
             </div>
-            {/* Search Bar */}
-            <div className="px-4 py-3 border-b bg-muted/30 flex items-center gap-2">
-              <svg
-                className="w-4 h-4 text-muted-foreground flex-shrink-0"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
-                />
-              </svg>
-              <input
-                type="text"
-                placeholder="Search note content..."
-                value={notesSearch}
-                onChange={(e) => setNotesSearch(e.target.value)}
-                className="flex-1 bg-transparent border-0 text-sm focus:outline-none"
-              />
-              <div className="flex items-center gap-1 text-xs text-muted-foreground">
-                <span className="w-12 text-right">
-                  {noteMatches.length
-                    ? `${notesMatchIndex + 1}/${noteMatches.length}`
-                    : '0/0'}
-                </span>
-                <Button
-                  type="button"
-                  size="icon"
-                  variant="ghost"
-                  className="h-7 w-7"
-                  onClick={goToPrevNoteMatch}
-                  disabled={!noteMatches.length}
-                  title="Previous match"
-                >
-                  ↑
-                </Button>
-                <Button
-                  type="button"
-                  size="icon"
-                  variant="ghost"
-                  className="h-7 w-7"
-                  onClick={goToNextNoteMatch}
-                  disabled={!noteMatches.length}
-                  title="Next match"
-                >
-                  ↓
-                </Button>
-              </div>
-              {notesSearch && (
-                <button
-                  type="button"
-                  onClick={() => setNotesSearch('')}
-                  className="text-xs text-muted-foreground hover:text-foreground"
-                >
-                  ✕
-                </button>
-              )}
-            </div>
-            {/* Content with search highlighting */}
-            <div className="flex-1 overflow-auto p-4" ref={notesContentRef}>
-              {notesSearch ? (
-                noteMatches.length ? (
-                  <div className="text-sm leading-relaxed whitespace-pre-wrap font-sans">
-                    {renderHighlightedContent(
-                      selectedNote.content,
-                      noteMatches,
-                      notesMatchIndex,
-                      'note-match',
-                    )}
-                  </div>
-                ) : (
-                  <div className="text-sm leading-relaxed whitespace-pre-wrap font-sans text-muted-foreground italic">
-                    {selectedNote.content}
-                  </div>
-                )
-              ) : (
-                <div className="text-sm leading-relaxed whitespace-pre-wrap font-sans">
-                  {selectedNote.content}
-                </div>
-              )}
+            <div className="flex-1 overflow-auto p-4">
+              <pre className="whitespace-pre-wrap text-sm font-mono">
+                {selectedNote.content}
+              </pre>
             </div>
             <div className="flex items-center justify-between p-4 border-t bg-muted/30">
               <span className="text-xs text-muted-foreground">
@@ -2291,10 +2407,10 @@ export function InstructorPanel({
       {viewingSource && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
-          onClick={() => setViewingSource(null)}
+          onClick={closeViewer}
           onKeyDown={(e) => {
             if (e.key === 'Escape') {
-              setViewingSource(null);
+              closeViewer();
             }
           }}
           role="dialog"
@@ -2308,7 +2424,7 @@ export function InstructorPanel({
             tabIndex={-1}
           >
             {/* Header */}
-            <div className="flex items-center justify-between px-6 py-4 border-b border-border bg-muted/30">
+            <div className="flex items-center gap-4 px-6 py-4 border-b border-border bg-muted/30">
               <div className="flex items-center gap-3 flex-1 min-w-0">
                 <div className="flex-shrink-0">
                   {viewingSource.type === 'pdf' && (
@@ -2369,115 +2485,73 @@ export function InstructorPanel({
                   </p>
                 </div>
               </div>
-              <button
-                type="button"
-                className="text-muted-foreground hover:text-foreground transition-colors rounded-full p-2 hover:bg-muted"
-                onClick={() => setViewingSource(null)}
-                aria-label="Close"
-              >
-                <svg
-                  className="w-5 h-5"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M6 18L18 6M6 6l12 12"
+              <div className="flex items-center gap-2 flex-shrink-0">
+                <div className="flex items-center gap-1 bg-muted rounded-md px-2 py-1">
+                  <input
+                    type="text"
+                    value={viewerSearch}
+                    onChange={(e) => setViewerSearch(e.target.value)}
+                    placeholder="Search in source"
+                    className="bg-transparent text-sm outline-none w-40"
                   />
-                </svg>
-              </button>
-            </div>
-
-            {/* Search Bar for source viewer */}
-            <div className="px-6 py-3 border-b border-border bg-muted/20 flex items-center gap-2">
-              <svg
-                className="w-4 h-4 text-muted-foreground flex-shrink-0"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
-                />
-              </svg>
-              <input
-                type="text"
-                placeholder="Search source content..."
-                value={viewerSearch}
-                onChange={(e) => setViewerSearch(e.target.value)}
-                className="flex-1 bg-transparent border-0 text-sm focus:outline-none"
-              />
-              <div className="flex items-center gap-1 text-xs text-muted-foreground">
-                <span className="w-12 text-right">
-                  {viewerMatches.length
-                    ? `${viewerMatchIndex + 1}/${viewerMatches.length}`
-                    : '0/0'}
-                </span>
-                <Button
-                  type="button"
-                  size="icon"
-                  variant="ghost"
-                  className="h-7 w-7"
-                  onClick={goToPrevViewerMatch}
-                  disabled={!viewerMatches.length}
-                  title="Previous match"
-                >
-                  ↑
-                </Button>
-                <Button
-                  type="button"
-                  size="icon"
-                  variant="ghost"
-                  className="h-7 w-7"
-                  onClick={goToNextViewerMatch}
-                  disabled={!viewerMatches.length}
-                  title="Next match"
-                >
-                  ↓
-                </Button>
-              </div>
-              {viewerSearch && (
+                  <div className="text-[11px] text-muted-foreground">
+                    {hasViewerMatches
+                      ? `${viewerMatchIndex + 1}/${viewerHighlight.count}`
+                      : '0/0'}
+                  </div>
+                </div>
+                <div className="flex items-center gap-1">
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    className="h-8 w-8"
+                    disabled={!hasViewerMatches}
+                    onClick={goToPrevMatch}
+                    title="Previous match"
+                  >
+                    ↑
+                  </Button>
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    className="h-8 w-8"
+                    disabled={!hasViewerMatches}
+                    onClick={goToNextMatch}
+                    title="Next match"
+                  >
+                    ↓
+                  </Button>
+                </div>
                 <button
                   type="button"
-                  onClick={() => setViewerSearch('')}
-                  className="text-xs text-muted-foreground hover:text-foreground"
+                  className="text-muted-foreground hover:text-foreground transition-colors rounded-full p-2 hover:bg-muted"
+                  onClick={closeViewer}
+                  aria-label="Close"
                 >
-                  ✕
+                  <svg
+                    className="w-5 h-5"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M6 18L18 6M6 6l12 12"
+                    />
+                  </svg>
                 </button>
-              )}
+              </div>
             </div>
 
             {/* Content */}
-            <div
-              className="flex-1 overflow-y-auto px-6 py-4"
-              ref={viewerContentRef}
-            >
-              {viewerSearch ? (
-                viewerMatches.length ? (
-                  <div className="whitespace-pre-wrap font-sans text-sm leading-relaxed">
-                    {renderHighlightedContent(
-                      viewingSource.content || '',
-                      viewerMatches,
-                      viewerMatchIndex,
-                      'viewer-match',
-                    )}
-                  </div>
-                ) : (
-                  <div className="whitespace-pre-wrap font-sans text-sm leading-relaxed text-muted-foreground italic">
-                    {viewingSource.content || 'No content available'}
-                  </div>
-                )
-              ) : (
-                <div className="whitespace-pre-wrap font-sans text-sm leading-relaxed">
-                  {viewingSource.content || 'No content available'}
-                </div>
-              )}
+            <div className="flex-1 overflow-y-auto px-6 py-4">
+              <div
+                ref={viewerContentRef}
+                className="whitespace-pre-wrap font-sans text-sm leading-relaxed break-words"
+                dangerouslySetInnerHTML={{ __html: viewerHighlight.html }}
+              />
             </div>
 
             {/* Footer with Actions */}
@@ -2517,11 +2591,7 @@ export function InstructorPanel({
                     Open Original
                   </Button>
                 )}
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => setViewingSource(null)}
-                >
+                <Button size="sm" variant="outline" onClick={closeViewer}>
                   Close
                 </Button>
               </div>

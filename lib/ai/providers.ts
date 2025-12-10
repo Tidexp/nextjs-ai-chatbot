@@ -795,9 +795,30 @@ export const myProvider = customProvider({
     } as any,
     'codellama-7b-instruct': {
       specificationVersion: 'v2',
+      // CodeLlama via local API; if not available, we fall back to Gemma-3 and warn
       modelId: 'codellama-7b-instruct',
-      doGenerate: (opts: any) => callCodeLlama('codellama-7b-instruct', opts),
-      doStream: (opts: any) => streamCodeLlama('codellama-7b-instruct', opts),
+      doGenerate: async (opts: any) => {
+        try {
+          return await callCodeLlama('codellama-7b-instruct', opts);
+        } catch (err) {
+          console.warn(
+            '[providers] CodeLlama endpoint unavailable, falling back to gemma-3-12b-it. Error:',
+            err,
+          );
+          return callGemini('models/gemma-3-12b-it', opts);
+        }
+      },
+      doStream: async (opts: any) => {
+        try {
+          return await streamCodeLlama('codellama-7b-instruct', opts);
+        } catch (err) {
+          console.warn(
+            '[providers] CodeLlama endpoint unavailable, falling back to gemma-3-12b-it. Error:',
+            err,
+          );
+          return streamGemini('models/gemma-3-12b-it', opts);
+        }
+      },
     } as any,
   },
 });
