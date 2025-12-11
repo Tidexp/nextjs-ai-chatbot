@@ -18,6 +18,7 @@ declare module 'next-auth' {
       type: UserType;
     } & DefaultSession['user'];
     accessToken?: string;
+    error?: string;
   }
 
   interface User {
@@ -32,8 +33,47 @@ declare module 'next-auth/jwt' {
     id: string;
     type: UserType;
     accessToken?: string;
+    accessTokenExpires?: number;
+    refreshToken?: string;
+    error?: string;
   }
 }
+
+const refreshGoogleAccessToken = async (token: any) => {
+  try {
+    const response = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        client_id: process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID ?? '',
+        client_secret: process.env.GOOGLE_CLIENT_SECRET ?? '',
+        grant_type: 'refresh_token',
+        refresh_token: token.refreshToken ?? '',
+      }),
+    });
+
+    const refreshedTokens = await response.json();
+
+    if (!response.ok) {
+      console.error(
+        '❌ Failed to refresh Google access token',
+        refreshedTokens,
+      );
+      throw new Error('RefreshAccessTokenError');
+    }
+
+    return {
+      ...token,
+      accessToken: refreshedTokens.access_token,
+      accessTokenExpires: Date.now() + (refreshedTokens.expires_in ?? 0) * 1000,
+      refreshToken: refreshedTokens.refresh_token ?? token.refreshToken,
+      error: undefined,
+    } as typeof token;
+  } catch (error) {
+    console.error('❌ Error refreshing Google access token', error);
+    return { ...token, error: 'RefreshAccessTokenError' } as typeof token;
+  }
+};
 
 export const {
   handlers: { GET, POST },
@@ -136,6 +176,10 @@ export const {
           );
         }
         token.accessToken = account.access_token;
+        token.refreshToken = account.refresh_token ?? token.refreshToken;
+        token.accessTokenExpires = account.expires_at
+          ? account.expires_at * 1000
+          : Date.now() + 55 * 60 * 1000;
       }
       // For credentials login (email/password or guest)
       else if (user) {
@@ -146,6 +190,17 @@ export const {
           id: token.id,
           type: token.type,
         });
+      }
+
+      // Refresh Google access token if expired
+      if (
+        !account &&
+        token.accessToken &&
+        token.refreshToken &&
+        token.accessTokenExpires &&
+        Date.now() > token.accessTokenExpires - 60_000
+      ) {
+        return refreshGoogleAccessToken(token);
       }
 
       // Ensure type is always set
@@ -164,6 +219,7 @@ export const {
         session.user.id = token.id;
         session.user.type = (token.type || 'regular') as UserType;
         session.accessToken = token.accessToken;
+        if (token.error) session.error = token.error;
         console.log('✅ Session callback - session updated:', {
           id: session.user.id,
           type: session.user.type,

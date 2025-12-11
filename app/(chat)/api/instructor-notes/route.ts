@@ -5,8 +5,23 @@ import {
   createInstructorNote,
   deleteInstructorNote,
   getChatById,
+  saveChat,
   listInstructorNotes,
 } from '@/lib/db/queries';
+import { generateUUID } from '@/lib/utils';
+
+async function ensureInstructorChat(chatId: string, userId: string) {
+  const chat = await getChatById({ id: chatId });
+  if (chat && chat.userId === userId) return chat;
+  await saveChat({
+    id: chatId || generateUUID(),
+    userId,
+    title: 'Instructor Studio',
+    visibility: 'private',
+    chatType: 'instructor',
+  });
+  return getChatById({ id: chatId });
+}
 
 export async function GET(request: Request) {
   try {
@@ -25,7 +40,7 @@ export async function GET(request: Request) {
       );
     }
 
-    const chat = await getChatById({ id: chatId });
+    const chat = await ensureInstructorChat(chatId, session.user.id);
     if (!chat || chat.userId !== session.user.id) {
       return new ChatSDKError('not_found:chat').toResponse();
     }
@@ -58,7 +73,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const chat = await getChatById({ id: chatId });
+    const chat = await ensureInstructorChat(chatId, session.user.id);
     if (!chat || chat.userId !== session.user.id) {
       return new ChatSDKError('not_found:chat').toResponse();
     }
@@ -95,7 +110,7 @@ export async function DELETE(request: Request) {
       );
     }
 
-    const chat = await getChatById({ id: chatId });
+    const chat = await ensureInstructorChat(chatId, session.user.id);
     if (!chat || chat.userId !== session.user.id) {
       return new ChatSDKError('not_found:chat').toResponse();
     }

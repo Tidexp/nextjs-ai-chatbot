@@ -1,4 +1,4 @@
-'use client';
+﻿'use client';
 
 import React from 'react';
 import { toast } from 'sonner';
@@ -204,6 +204,14 @@ export function InstructorPanel({
   const [selectedNote, setSelectedNote] = React.useState<InstructorNote | null>(
     null,
   );
+  const [showQuizModal, setShowQuizModal] = React.useState(false);
+  const [quizNumQuestions, setQuizNumQuestions] = React.useState(5);
+  const [quizDifficulty, setQuizDifficulty] = React.useState<
+    'easy' | 'medium' | 'hard'
+  >('medium');
+  const [quizFocus, setQuizFocus] = React.useState('');
+  const [quizError, setQuizError] = React.useState<string | null>(null);
+  const [quizLoading, setQuizLoading] = React.useState(false);
   const instructorChatId = React.useMemo(
     () => chatId || generateUUID(),
     [chatId],
@@ -434,6 +442,94 @@ export function InstructorPanel({
     }
   }, []);
 
+  const handleCreateQuiz = React.useCallback(async () => {
+    if (enabledSources.size === 0) {
+      toast.error('Enable at least one source before creating a quiz.');
+      return;
+    }
+
+    setQuizLoading(true);
+    setQuizError(null);
+
+    const lengthHint =
+      quizNumQuestions <= 4
+        ? 'short'
+        : quizNumQuestions <= 8
+          ? 'medium'
+          : 'long';
+
+    try {
+      const res = await fetch('/api/instructor-tests', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sourceIds: Array.from(enabledSources),
+          numQuestions: quizNumQuestions,
+          difficulty: quizDifficulty,
+          userFocus: quizFocus.trim(),
+          lengthHint,
+        }),
+      });
+
+      if (!res.ok) {
+        const txt = await res.text();
+        throw new Error(txt || 'Failed to create quiz');
+      }
+
+      const data = await res.json();
+      const test = data?.test;
+      if (!test?.id) {
+        throw new Error('Invalid quiz response');
+      }
+
+      if (typeof window !== 'undefined') {
+        sessionStorage.setItem(
+          `instructor-test-${test.id}`,
+          JSON.stringify(test),
+        );
+      }
+
+      const payload = encodeURIComponent(JSON.stringify(test));
+      const link = `/tests/${test.id}?payload=${payload}`;
+      const noteTitle = `MCQ: ${test.title || 'Knowledge Check'}`;
+
+      const noteRes = await fetch('/api/instructor-notes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chatId: instructorChatId,
+          title: noteTitle,
+          content: link,
+        }),
+      });
+
+      if (!noteRes.ok) {
+        const txt = await noteRes.text();
+        throw new Error(txt || 'Failed to save quiz note');
+      }
+
+      const noteData = await noteRes.json();
+      if (noteData?.note) {
+        setNotes((prev) => [noteData.note, ...prev]);
+      }
+
+      toast.success('Quiz created. Open it from the saved note.');
+      setShowQuizModal(false);
+    } catch (error: any) {
+      const message = error?.message || 'Failed to create quiz.';
+      setQuizError(message);
+      toast.error(message);
+    } finally {
+      setQuizLoading(false);
+    }
+  }, [
+    enabledSources,
+    instructorChatId,
+    quizDifficulty,
+    quizFocus,
+    quizNumQuestions,
+  ]);
+
   function detectType(file: File): SourceItem['type'] {
     const mt = file.type;
     if (mt.startsWith('image/')) return 'image';
@@ -618,7 +714,7 @@ export function InstructorPanel({
           return ''; // Return empty string on error
         }
       }
-      // XLSX parsing via xlsx (SheetJS) — flatten all sheets to plain text
+      // XLSX parsing via xlsx (SheetJS) ΓÇö flatten all sheets to plain text
       if (
         file.name.toLowerCase().endsWith('.xlsx') ||
         file.type ===
@@ -651,7 +747,7 @@ export function InstructorPanel({
           console.error('Failed to parse XLSX', err);
         }
       }
-      // PDF parsing via pdfjs-dist — extract text content page by page
+      // PDF parsing via pdfjs-dist ΓÇö extract text content page by page
       if (file.name.toLowerCase().endsWith('.pdf')) {
         try {
           console.log(`[PDF] Reading ${file.name} (${file.size} bytes)`);
@@ -1746,7 +1842,7 @@ export function InstructorPanel({
                           }
                         }}
                       >
-                        ✕
+                        X
                       </Button>
                     </div>
                     <div
@@ -1830,7 +1926,7 @@ export function InstructorPanel({
             </div>
             <div className="flex flex-col gap-2">
               <Button size="sm" variant="secondary" onClick={onAddSourceClick}>
-                ➕ Add Source
+                Add Source
               </Button>
               <input
                 ref={fileInputRef}
@@ -2038,7 +2134,7 @@ export function InstructorPanel({
                       onClick={() => setShowPasteModal(false)}
                       aria-label="Close"
                     >
-                      ✕
+                      X
                     </button>
                     <div className="text-lg font-semibold mb-2">
                       Paste Copied Text
@@ -2072,7 +2168,7 @@ export function InstructorPanel({
                       onClick={() => setShowUrlModal(false)}
                       aria-label="Close"
                     >
-                      ✕
+                      Γ£ò
                     </button>
                     <div className="text-lg font-semibold mb-2">
                       Add Website URL
@@ -2257,9 +2353,20 @@ export function InstructorPanel({
                       Pin responses from chat and review them here.
                     </p>
                   </div>
-                  <span className="text-[11px] px-2 py-1 rounded-full bg-muted text-muted-foreground">
-                    {notes.length} saved
-                  </span>
+                  <div className="flex items-center gap-2">
+                    {quizLoading && (
+                      <div className="flex items-center gap-1 text-[11px] px-2 py-1 rounded-full bg-primary/10 text-primary font-medium">
+                        <span
+                          className="h-3.5 w-3.5 rounded-full border-2 border-primary border-t-transparent animate-spin"
+                          aria-hidden
+                        />
+                        Generating quiz…
+                      </div>
+                    )}
+                    <span className="text-[11px] px-2 py-1 rounded-full bg-muted text-muted-foreground">
+                      {notes.length} saved
+                    </span>
+                  </div>
                 </div>
 
                 {notesLoading ? (
@@ -2273,64 +2380,83 @@ export function InstructorPanel({
                   </div>
                 ) : (
                   <div className="space-y-2">
-                    {notes.map((note) => (
-                      <div
-                        key={note.id}
-                        role="button"
-                        tabIndex={0}
-                        className="w-full text-left rounded-lg border p-3 bg-muted/40 space-y-2 cursor-pointer hover:bg-muted/60 transition-colors focus:outline-none focus:ring-2 focus:ring-primary"
-                        onClick={() => setSelectedNote(note)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter' || e.key === ' ') {
-                            setSelectedNote(note);
-                          }
-                        }}
-                        aria-label={`View note: ${note.title}`}
-                      >
-                        <div className="flex items-center justify-between gap-2">
-                          <div className="flex flex-col gap-1 min-w-0">
-                            <span className="text-sm font-medium truncate">
-                              {note.title}
-                            </span>
-                            <span className="text-[11px] text-muted-foreground">
-                              {new Date(note.createdAt).toLocaleString(
-                                undefined,
-                                {
-                                  hour: '2-digit',
-                                  minute: '2-digit',
-                                  month: 'short',
-                                  day: 'numeric',
-                                },
-                              )}
-                            </span>
-                          </div>
-                          <div className="flex items-center gap-1">
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              className="h-7 px-2 text-xs"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleCopyNote(note);
-                              }}
-                            >
-                              Copy
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              className="h-7 px-2 text-xs text-destructive"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleRemoveNote(note.id);
-                              }}
-                            >
-                              Remove
-                            </Button>
+                    {notes.map((note) => {
+                      const isMcqNote =
+                        note.title?.startsWith('MCQ:') &&
+                        typeof note.content === 'string' &&
+                        (note.content.startsWith('http') ||
+                          note.content.startsWith('/tests'));
+
+                      const openNote = () => {
+                        if (isMcqNote) {
+                          window.location.href = note.content as string;
+                        } else {
+                          setSelectedNote(note);
+                        }
+                      };
+
+                      const handleKey = (e: React.KeyboardEvent) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          openNote();
+                        }
+                      };
+
+                      return (
+                        <div
+                          key={note.id}
+                          role="button"
+                          tabIndex={0}
+                          className="w-full text-left rounded-lg border p-3 bg-muted/40 space-y-2 cursor-pointer hover:bg-muted/60 transition-colors focus:outline-none focus:ring-2 focus:ring-primary"
+                          onClick={openNote}
+                          onKeyDown={handleKey}
+                          aria-label={`View note: ${note.title}`}
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="flex flex-col gap-1 min-w-0">
+                              <span className="text-sm font-medium truncate">
+                                {note.title}
+                              </span>
+                              <span className="text-[11px] text-muted-foreground">
+                                {new Date(note.createdAt).toLocaleString(
+                                  undefined,
+                                  {
+                                    hour: '2-digit',
+                                    minute: '2-digit',
+                                    month: 'short',
+                                    day: 'numeric',
+                                  },
+                                )}
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-1">
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-7 px-2 text-xs"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleCopyNote(note);
+                                }}
+                              >
+                                Copy
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-7 px-2 text-xs text-destructive"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleRemoveNote(note.id);
+                                }}
+                              >
+                                Remove
+                              </Button>
+                            </div>
                           </div>
                         </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </div>
@@ -2354,8 +2480,12 @@ export function InstructorPanel({
                     size="sm"
                     variant="outline"
                     className="w-full justify-start text-xs"
+                    onClick={() => {
+                      setQuizError(null);
+                      setShowQuizModal(true);
+                    }}
                   >
-                    📌 Summarize newest note
+                    🧪 Create quiz from sources
                   </Button>
                   <Button
                     size="sm"
@@ -2401,6 +2531,137 @@ export function InstructorPanel({
           </div>
         )}
       </div>
+
+      {showQuizModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+          onClick={() => setShowQuizModal(false)}
+          role="dialog"
+          aria-modal="true"
+        >
+          <div
+            className="bg-background rounded-xl shadow-2xl w-full max-w-2xl mx-4 border border-border relative"
+            onClick={(e) => e.stopPropagation()}
+            role="document"
+          >
+            <div className="flex items-center justify-between px-6 py-4 border-b border-border bg-muted/40">
+              <div>
+                <p className="text-xs uppercase text-muted-foreground tracking-wide">
+                  Quick Action
+                </p>
+                <h3 className="text-lg font-semibold">
+                  Create multiple-choice quiz
+                </h3>
+              </div>
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => setShowQuizModal(false)}
+              >
+                ✕
+              </Button>
+            </div>
+
+            <div className="px-6 py-5 space-y-5">
+              <div className="space-y-2">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-medium">Number of questions</p>
+                    <p className="text-xs text-muted-foreground">
+                      Between 3 and 12
+                    </p>
+                  </div>
+                  <span className="text-sm font-semibold">
+                    {quizNumQuestions}
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min={3}
+                  max={12}
+                  value={quizNumQuestions}
+                  onChange={(e) => setQuizNumQuestions(Number(e.target.value))}
+                  className="w-full"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <p className="text-sm font-medium">Difficulty</p>
+                <div className="grid grid-cols-3 gap-2">
+                  {(['easy', 'medium', 'hard'] as const).map((level) => (
+                    <Button
+                      key={level}
+                      type="button"
+                      variant={quizDifficulty === level ? 'default' : 'outline'}
+                      className="w-full"
+                      onClick={() => setQuizDifficulty(level)}
+                    >
+                      {level.charAt(0).toUpperCase() + level.slice(1)}
+                    </Button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <p className="text-sm font-medium">Focus (optional)</p>
+                  <span className="text-[11px] text-muted-foreground">
+                    What to emphasize
+                  </span>
+                </div>
+                <textarea
+                  className="w-full rounded-md border bg-background p-3 text-sm"
+                  rows={3}
+                  value={quizFocus}
+                  onChange={(e) => setQuizFocus(e.target.value)}
+                  placeholder="E.g., definitions of key terms, troubleshooting steps"
+                />
+              </div>
+
+              {quizError ? (
+                <div className="text-sm text-destructive bg-destructive/10 border border-destructive/40 rounded-md px-3 py-2">
+                  {quizError}
+                </div>
+              ) : null}
+
+              <div className="flex justify-end gap-2 pt-2">
+                <Button
+                  variant="outline"
+                  onClick={() => setShowQuizModal(false)}
+                  disabled={quizLoading}
+                >
+                  Cancel
+                </Button>
+                <Button onClick={handleCreateQuiz} disabled={quizLoading}>
+                  {quizLoading ? (
+                    <span className="inline-flex items-center gap-2">
+                      <span
+                        className="h-4 w-4 rounded-full border-2 border-primary border-t-transparent animate-spin"
+                        aria-hidden
+                      />
+                      Generating…
+                    </span>
+                  ) : (
+                    'Create quiz'
+                  )}
+                </Button>
+              </div>
+            </div>
+
+            {quizLoading && (
+              <div className="absolute inset-0 rounded-xl bg-background/80 backdrop-blur-sm flex items-center justify-center">
+                <div className="flex items-center gap-3 text-sm font-medium">
+                  <span
+                    className="h-5 w-5 rounded-full border-2 border-primary border-t-transparent animate-spin"
+                    aria-hidden
+                  />
+                  Generating your quiz…
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Note View Modal */}
       {selectedNote && (
