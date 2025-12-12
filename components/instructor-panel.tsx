@@ -181,6 +181,7 @@ const deleteSourceFromAPI = async (sourceId: string) => {
 };
 
 import { InstructorChat } from './instructor-chat';
+import { MindMapViewer } from './mind-map-viewer';
 
 export function InstructorPanel({
   chatId,
@@ -194,7 +195,7 @@ export function InstructorPanel({
   const [showStudio, setShowStudio] = React.useState(true);
   const [showChat, setShowChat] = React.useState(true);
   const [sourcesWidth, setSourcesWidth] = React.useState(320);
-  const [studioWidth, setStudioWidth] = React.useState(320);
+  const [studioWidth, setStudioWidth] = React.useState(420);
   const [isResizingSources, setIsResizingSources] = React.useState(false);
   const [isResizingStudio, setIsResizingStudio] = React.useState(false);
   const [dragStartX, setDragStartX] = React.useState(0);
@@ -212,6 +213,21 @@ export function InstructorPanel({
   const [quizFocus, setQuizFocus] = React.useState('');
   const [quizError, setQuizError] = React.useState<string | null>(null);
   const [quizLoading, setQuizLoading] = React.useState(false);
+  const [selectedChatModel, setSelectedChatModel] = React.useState<string>('');
+  const [showFlashcardModal, setShowFlashcardModal] = React.useState(false);
+  const [flashcardCount, setFlashcardCount] = React.useState(10);
+  const [flashcardDifficulty, setFlashcardDifficulty] = React.useState<
+    'easy' | 'medium' | 'hard'
+  >('medium');
+  const [flashcardFocus, setFlashcardFocus] = React.useState('');
+  const [flashcardError, setFlashcardError] = React.useState<string | null>(
+    null,
+  );
+  const [flashcardLoading, setFlashcardLoading] = React.useState(false);
+  const [showMindMapModal, setShowMindMapModal] = React.useState(false);
+  const [mindMapData, setMindMapData] = React.useState<any>(null);
+  const [mindMapLoading, setMindMapLoading] = React.useState(false);
+  const [mindMapError, setMindMapError] = React.useState<string | null>(null);
   const instructorChatId = React.useMemo(
     () => chatId || generateUUID(),
     [chatId],
@@ -468,6 +484,7 @@ export function InstructorPanel({
           difficulty: quizDifficulty,
           userFocus: quizFocus.trim(),
           lengthHint,
+          model: selectedChatModel,
         }),
       });
 
@@ -528,6 +545,155 @@ export function InstructorPanel({
     quizDifficulty,
     quizFocus,
     quizNumQuestions,
+    selectedChatModel,
+  ]);
+
+  const handleCreateMindMap = React.useCallback(async () => {
+    if (enabledSources.size === 0) {
+      toast.error('Enable at least one source before creating a mind map.');
+      return;
+    }
+
+    setMindMapLoading(true);
+    setMindMapError(null);
+
+    try {
+      const res = await fetch('/api/instructor-mindmap', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sourceIds: Array.from(enabledSources),
+          model: selectedChatModel,
+        }),
+      });
+
+      if (!res.ok) {
+        const txt = await res.text();
+        throw new Error(txt || 'Failed to create mind map');
+      }
+
+      const data = await res.json();
+      if (!data?.root) {
+        throw new Error('Invalid mind map response');
+      }
+
+      setMindMapData(data);
+      setShowMindMapModal(true);
+
+      // Save to notes for later
+      try {
+        const noteTitle = `🗺️ Mind Map: ${data.title || 'Concept Map'}`;
+        const content = JSON.stringify(data, null, 2);
+        const noteRes = await fetch('/api/instructor-notes', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            chatId: instructorChatId,
+            title: noteTitle,
+            content,
+          }),
+        });
+
+        if (noteRes.ok) {
+          const noteData = await noteRes.json();
+          if (noteData?.note) {
+            setNotes((prev) => [noteData.note, ...prev]);
+          }
+        }
+      } catch (e) {
+        console.warn('[MindMap] Failed to save note', e);
+      }
+
+      toast.success('Mind map created and saved to notes.');
+    } catch (error: any) {
+      const message = error?.message || 'Failed to create mind map.';
+      setMindMapError(message);
+      toast.error(message);
+    } finally {
+      setMindMapLoading(false);
+    }
+  }, [enabledSources, selectedChatModel]);
+
+  const handleCreateFlashcards = React.useCallback(async () => {
+    if (enabledSources.size === 0) {
+      toast.error('Enable at least one source before creating flashcards.');
+      return;
+    }
+
+    setFlashcardLoading(true);
+    setFlashcardError(null);
+
+    try {
+      const res = await fetch('/api/instructor-flashcards', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sourceIds: Array.from(enabledSources),
+          count: flashcardCount,
+          difficulty: flashcardDifficulty,
+          userFocus: flashcardFocus.trim(),
+          model: selectedChatModel,
+        }),
+      });
+
+      if (!res.ok) {
+        const txt = await res.text();
+        throw new Error(txt || 'Failed to create flashcards');
+      }
+
+      const data = await res.json();
+      const deck = data?.deck;
+      if (!deck?.id) {
+        throw new Error('Invalid flashcard response');
+      }
+
+      if (typeof window !== 'undefined') {
+        sessionStorage.setItem(
+          `instructor-flashcards-${deck.id}`,
+          JSON.stringify(deck),
+        );
+      }
+
+      const payload = encodeURIComponent(JSON.stringify(deck));
+      const link = `/flashcards/${deck.id}?payload=${payload}`;
+      const noteTitle = `📇 Flashcards: ${deck.title || 'Study Deck'}`;
+
+      const noteRes = await fetch('/api/instructor-notes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chatId: instructorChatId,
+          title: noteTitle,
+          content: link,
+        }),
+      });
+
+      if (!noteRes.ok) {
+        const txt = await noteRes.text();
+        throw new Error(txt || 'Failed to save flashcard note');
+      }
+
+      const noteData = await noteRes.json();
+      if (noteData?.note) {
+        setNotes((prev) => [noteData.note, ...prev]);
+      }
+
+      toast.success('Flashcards created. Open them from the saved note.');
+      setShowFlashcardModal(false);
+    } catch (error: any) {
+      const message = error?.message || 'Failed to create flashcards.';
+      setFlashcardError(message);
+      toast.error(message);
+    } finally {
+      setFlashcardLoading(false);
+    }
+  }, [
+    enabledSources,
+    instructorChatId,
+    flashcardDifficulty,
+    flashcardFocus,
+    flashcardCount,
+    selectedChatModel,
   ]);
 
   function detectType(file: File): SourceItem['type'] {
@@ -1772,7 +1938,7 @@ export function InstructorPanel({
                         <div className="flex flex-col items-center gap-3 px-4">
                           <div className="w-full h-1.5 bg-muted rounded-full overflow-hidden relative">
                             <div
-                              className="absolute inset-0 bg-gradient-to-r from-blue-500 via-blue-400 to-blue-500 animate-[shimmer_2s_ease-in-out_infinite]"
+                              className="absolute inset-0 bg-gradient-to-r from-blue-500 via-blue-400 to-blue-500 animate-shimmer"
                               style={{
                                 backgroundSize: '200% 100%',
                               }}
@@ -2293,6 +2459,7 @@ export function InstructorPanel({
                 enabledSourceIds={enabledSources}
                 chatId={instructorChatId}
                 onStoreNote={handleStoreNote}
+                onModelChange={setSelectedChatModel}
               />
             </div>
           </div>
@@ -2363,6 +2530,24 @@ export function InstructorPanel({
                         Generating quiz…
                       </div>
                     )}
+                    {flashcardLoading && (
+                      <div className="flex items-center gap-1 text-[11px] px-2 py-1 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 font-medium">
+                        <span
+                          className="h-3.5 w-3.5 rounded-full border-2 border-emerald-600 dark:border-emerald-400 border-t-transparent animate-spin"
+                          aria-hidden
+                        />
+                        Generating flashcards…
+                      </div>
+                    )}
+                    {mindMapLoading && (
+                      <div className="flex items-center gap-1 text-[11px] px-2 py-1 rounded-full bg-violet-500/10 text-violet-600 dark:text-violet-400 font-medium">
+                        <span
+                          className="h-3.5 w-3.5 rounded-full border-2 border-violet-600 dark:border-violet-400 border-t-transparent animate-spin"
+                          aria-hidden
+                        />
+                        Generating mind map…
+                      </div>
+                    )}
                     <span className="text-[11px] px-2 py-1 rounded-full bg-muted text-muted-foreground">
                       {notes.length} saved
                     </span>
@@ -2387,9 +2572,29 @@ export function InstructorPanel({
                         (note.content.startsWith('http') ||
                           note.content.startsWith('/tests'));
 
+                      const isFlashcardNote =
+                        note.title?.startsWith('📇') &&
+                        typeof note.content === 'string' &&
+                        (note.content.startsWith('http') ||
+                          note.content.startsWith('/flashcards'));
+
+                      const isMindMapNote = note.title?.startsWith('🗺️');
+
+                      const isQuickNote =
+                        isMcqNote || isFlashcardNote || isMindMapNote;
+
                       const openNote = () => {
-                        if (isMcqNote) {
+                        if (isMcqNote || isFlashcardNote) {
                           window.location.href = note.content as string;
+                        } else if (isMindMapNote) {
+                          try {
+                            const parsed = JSON.parse(note.content as string);
+                            setMindMapData(parsed);
+                            setShowMindMapModal(true);
+                          } catch (e) {
+                            console.error('Failed to parse mind map data', e);
+                            setSelectedNote(note);
+                          }
                         } else {
                           setSelectedNote(note);
                         }
@@ -2491,6 +2696,17 @@ export function InstructorPanel({
                     size="sm"
                     variant="outline"
                     className="w-full justify-start text-xs"
+                    onClick={() => {
+                      setFlashcardError(null);
+                      setShowFlashcardModal(true);
+                    }}
+                  >
+                    📇 Create flashcards
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="w-full justify-start text-xs"
                   >
                     📤 Export notes
                   </Button>
@@ -2500,6 +2716,15 @@ export function InstructorPanel({
                     className="w-full justify-start text-xs"
                   >
                     🧭 Next learning step
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="w-full justify-start text-xs"
+                    onClick={handleCreateMindMap}
+                    disabled={mindMapLoading}
+                  >
+                    🗺️ Create mind map
                   </Button>
                   <Button
                     size="sm"
@@ -2656,6 +2881,141 @@ export function InstructorPanel({
                     aria-hidden
                   />
                   Generating your quiz…
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Flashcard Modal */}
+      {showFlashcardModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+          onClick={() => setShowFlashcardModal(false)}
+          role="dialog"
+          aria-modal="true"
+        >
+          <div
+            className="bg-background rounded-xl shadow-2xl w-full max-w-2xl mx-4 border border-border relative"
+            onClick={(e) => e.stopPropagation()}
+            role="document"
+          >
+            <div className="flex items-center justify-between px-6 py-4 border-b border-border bg-muted/40">
+              <div>
+                <p className="text-xs uppercase text-muted-foreground tracking-wide">
+                  Quick Action
+                </p>
+                <h3 className="text-lg font-semibold">Create flashcard deck</h3>
+              </div>
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => setShowFlashcardModal(false)}
+              >
+                ✕
+              </Button>
+            </div>
+
+            <div className="px-6 py-5 space-y-5">
+              <div className="space-y-2">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-medium">Number of cards</p>
+                    <p className="text-xs text-muted-foreground">
+                      Between 5 and 50
+                    </p>
+                  </div>
+                  <span className="text-sm font-semibold">
+                    {flashcardCount}
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min={5}
+                  max={50}
+                  value={flashcardCount}
+                  onChange={(e) => setFlashcardCount(Number(e.target.value))}
+                  className="w-full"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <p className="text-sm font-medium">Difficulty</p>
+                <div className="grid grid-cols-3 gap-2">
+                  {(['easy', 'medium', 'hard'] as const).map((level) => (
+                    <Button
+                      key={level}
+                      type="button"
+                      variant={
+                        flashcardDifficulty === level ? 'default' : 'outline'
+                      }
+                      className="w-full"
+                      onClick={() => setFlashcardDifficulty(level)}
+                    >
+                      {level.charAt(0).toUpperCase() + level.slice(1)}
+                    </Button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <p className="text-sm font-medium">Focus (optional)</p>
+                  <span className="text-[11px] text-muted-foreground">
+                    What to emphasize
+                  </span>
+                </div>
+                <textarea
+                  className="w-full rounded-md border bg-background p-3 text-sm"
+                  rows={3}
+                  value={flashcardFocus}
+                  onChange={(e) => setFlashcardFocus(e.target.value)}
+                  placeholder="E.g., key definitions, important concepts"
+                />
+              </div>
+
+              {flashcardError ? (
+                <div className="text-sm text-destructive bg-destructive/10 border border-destructive/40 rounded-md px-3 py-2">
+                  {flashcardError}
+                </div>
+              ) : null}
+
+              <div className="flex justify-end gap-2 pt-2">
+                <Button
+                  variant="outline"
+                  onClick={() => setShowFlashcardModal(false)}
+                  disabled={flashcardLoading}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  onClick={handleCreateFlashcards}
+                  disabled={flashcardLoading}
+                >
+                  {flashcardLoading ? (
+                    <span className="inline-flex items-center gap-2">
+                      <span
+                        className="h-4 w-4 rounded-full border-2 border-primary border-t-transparent animate-spin"
+                        aria-hidden
+                      />
+                      Generating…
+                    </span>
+                  ) : (
+                    'Create flashcards'
+                  )}
+                </Button>
+              </div>
+            </div>
+
+            {flashcardLoading && (
+              <div className="absolute inset-0 rounded-xl bg-background/80 backdrop-blur-sm flex items-center justify-center">
+                <div className="flex items-center gap-3 text-sm font-medium">
+                  <span
+                    className="h-5 w-5 rounded-full border-2 border-primary border-t-transparent animate-spin"
+                    aria-hidden
+                  />
+                  Generating your flashcards…
                 </div>
               </div>
             )}
@@ -2985,6 +3345,75 @@ export function InstructorPanel({
                   Close
                 </Button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Mind Map Modal */}
+      {showMindMapModal && mindMapData && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+          onClick={() => setShowMindMapModal(false)}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') {
+              setShowMindMapModal(false);
+            }
+          }}
+          role="dialog"
+          aria-modal="true"
+        >
+          <div
+            className="bg-background rounded-xl shadow-2xl w-full max-w-6xl mx-4 h-[85vh] flex flex-col border border-border"
+            onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => e.stopPropagation()}
+            role="document"
+            tabIndex={-1}
+          >
+            {/* Header */}
+            <div className="flex items-center justify-between px-6 py-4 border-b border-border bg-muted/40 flex-shrink-0">
+              <div>
+                <p className="text-xs uppercase text-muted-foreground tracking-wide">
+                  Interactive Mind Map
+                </p>
+                <h2 className="text-lg font-semibold">{mindMapData.title}</h2>
+              </div>
+              <button
+                type="button"
+                className="text-muted-foreground hover:text-foreground transition-colors rounded-full p-2 hover:bg-muted"
+                onClick={() => setShowMindMapModal(false)}
+                aria-label="Close"
+              >
+                <svg
+                  className="w-5 h-5"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M6 18L18 6M6 6l12 12"
+                  />
+                </svg>
+              </button>
+            </div>
+
+            {/* Mind Map Viewer */}
+            <div className="flex-1 overflow-hidden">
+              <MindMapViewer data={mindMapData} />
+            </div>
+
+            {/* Footer */}
+            <div className="flex items-center justify-end px-6 py-3 border-t border-border bg-muted/30 flex-shrink-0 gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => setShowMindMapModal(false)}
+              >
+                Close
+              </Button>
             </div>
           </div>
         </div>

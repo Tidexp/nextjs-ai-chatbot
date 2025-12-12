@@ -16,6 +16,7 @@ interface InstructorChatProps {
   enabledSourceIds: Set<string>;
   onStoreNote?: (message: ChatMessage) => void;
   chatId: string;
+  onModelChange?: (model: string) => void;
 }
 
 export function InstructorChat({
@@ -23,6 +24,7 @@ export function InstructorChat({
   enabledSourceIds,
   onStoreNote,
   chatId,
+  onModelChange,
 }: InstructorChatProps) {
   const { data: session } = useSession();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -34,6 +36,11 @@ export function InstructorChat({
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const abortControllerRef = useRef<AbortController | null>(null);
   const sourcesSyncedRef = useRef<Set<string>>(new Set());
+
+  // Notify parent when model changes
+  useEffect(() => {
+    onModelChange?.(selectedModel);
+  }, [selectedModel, onModelChange]);
 
   // Sync enabled sources with the chat in the database
   useEffect(() => {

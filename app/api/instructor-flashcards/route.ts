@@ -48,7 +48,7 @@ export async function POST(request: Request) {
   const sourceIds: string[] = Array.isArray(body.sourceIds)
     ? body.sourceIds
     : [];
-  const numQuestions = Math.min(Math.max(body.numQuestions ?? 5, 3), 12);
+  const count = Math.min(Math.max(body.count ?? 10, 5), 50);
   const userFocus: string =
     typeof body.userFocus === 'string' ? body.userFocus.trim() : '';
   const difficulty: string = ['easy', 'medium', 'hard'].includes(
@@ -56,16 +56,11 @@ export async function POST(request: Request) {
   )
     ? body.difficulty.toLowerCase()
     : 'medium';
-  const lengthHint: string = ['short', 'medium', 'long'].includes(
-    (body.lengthHint || '').toLowerCase(),
-  )
-    ? body.lengthHint.toLowerCase()
-    : 'medium';
   const model: string = typeof body.model === 'string' ? body.model.trim() : '';
 
   if (sourceIds.length === 0) {
     return NextResponse.json(
-      { error: 'No sources selected for test generation' },
+      { error: 'No sources selected for flashcard generation' },
       { status: 400 },
     );
   }
@@ -92,7 +87,7 @@ export async function POST(request: Request) {
     },
   );
 
-  const prompt = `You are an instructional designer. Create a multiple-choice quiz strictly using the material below. Do NOT invent facts. Prefer clear textual statements over vague "image shows" language; if image OCR is present, use that extracted text.\n\nMaterials (text first, then OCR if any):\n${contextBlocks.join('\n\n---\n\n')}\n\nQuiz requirements:\n- Questions: ${numQuestions}\n- Difficulty: ${difficulty}\n- Length: ${lengthHint} questions with concise phrasing.\n- Each question has exactly 4 options.\n- Provide a helpful, text-based explanation tied to the material (avoid "image shows" phrasing).\n${userFocus ? `- Focus: ${userFocus}\n` : ''}- correctIndex is zero-based.\n\nOutput JSON ONLY in this shape:\n{\n  "title": string,\n  "questions": [\n    {\n      "id": string,\n      "question": string,\n      "options": [string, string, string, string],\n      "correctIndex": number,\n      "explanation": string\n    }\n  ]\n}\n`;
+  const prompt = `You are an instructional designer. Create a flashcard deck from the material below. Each card should have a clear front (question/prompt) and back (answer) based strictly on the provided content. Do NOT invent facts.\n\nMaterials:\n${contextBlocks.join('\n\n---\n\n')}\n\nFlashcard requirements:\n- Cards: ${count}\n- Difficulty: ${difficulty}\n- Format: Clear, concise Q&A pairs suitable for studying\n- Avoid single-word answers; provide complete, helpful responses\n${userFocus ? `- Focus: ${userFocus}\n` : ''}\nOutput JSON ONLY in this shape:\n{\n  "title": string,\n  "cards": [\n    {\n      "id": string,\n      "front": string,\n      "back": string\n    }\n  ]\n}\n`;
 
   const modelFallbacks = model
     ? [model, 'gemini-2.5-flash', 'gemini-2.5-flash-lite']
@@ -106,7 +101,7 @@ export async function POST(request: Request) {
         model: myProvider.languageModel(modelId),
         prompt,
         temperature: 0.3,
-        maxTokens: 800,
+        maxTokens: 2000,
       } as any);
       text = result.text;
       break;
@@ -120,7 +115,7 @@ export async function POST(request: Request) {
 
       if (!isOverloaded) {
         return NextResponse.json(
-          { error: 'Failed to generate quiz' },
+          { error: 'Failed to generate flashcards' },
           { status: 500 },
         );
       }
@@ -129,7 +124,7 @@ export async function POST(request: Request) {
   }
 
   if (!text) {
-    console.error('Quiz generation failed after fallbacks:', lastError);
+    console.error('Flashcard generation failed after fallbacks:', lastError);
     return NextResponse.json(
       { error: 'Model temporarily unavailable. Please try again shortly.' },
       { status: 503 },
@@ -137,48 +132,39 @@ export async function POST(request: Request) {
   }
 
   const parsed = extractJson(text);
-  if (!parsed || !Array.isArray(parsed.questions)) {
+  if (!parsed || !Array.isArray(parsed.cards)) {
     return NextResponse.json(
-      { error: 'Failed to generate quiz' },
+      { error: 'Failed to generate flashcards' },
       { status: 500 },
     );
   }
 
-  const testId = generateUUID();
-  const questions = parsed.questions
-    .slice(0, numQuestions)
-    .map((q: any, idx: number) => ({
-      id: q.id || `${testId}-q${idx + 1}`,
-      question: String(q.question || '').trim(),
-      options: Array.isArray(q.options)
-        ? q.options.slice(0, 4).map(String)
-        : [],
-      correctIndex:
-        typeof q.correctIndex === 'number' &&
-        q.correctIndex >= 0 &&
-        q.correctIndex < 4
-          ? q.correctIndex
-          : 0,
-      explanation: String(q.explanation || '').trim(),
+  const deckId = generateUUID();
+  const cards = parsed.cards
+    .slice(0, count)
+    .map((c: any, idx: number) => ({
+      id: c.id || `${deckId}-card${idx + 1}`,
+      front: String(c.front || '').trim(),
+      back: String(c.back || '').trim(),
     }))
-    .filter((q: any) => q.question && q.options.length === 4);
+    .filter((c: any) => c.front && c.back);
 
-  if (questions.length === 0) {
+  if (cards.length === 0) {
     return NextResponse.json(
-      { error: 'Quiz generation returned no questions' },
+      { error: 'Flashcard generation returned no cards' },
       { status: 500 },
     );
   }
 
-  const test = {
-    id: testId,
-    title: parsed.title || 'Knowledge Check',
+  const deck = {
+    id: deckId,
+    title: parsed.title || 'Study Deck',
     sourceTitles: sources.map(
       (s: (typeof instructorSource)['$inferSelect']) => s.title,
     ),
-    questions,
+    cards,
     createdAt: new Date().toISOString(),
   };
 
-  return NextResponse.json({ test }, { status: 201 });
+  return NextResponse.json({ deck }, { status: 201 });
 }
