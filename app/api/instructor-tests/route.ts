@@ -14,6 +14,13 @@ const db = drizzle(client);
 
 const MAX_SOURCE_CHARS = 6000;
 
+// UUID validation - filters out temporary upload IDs like "drive-upload-..."
+const isValidUUID = (id: string): boolean => {
+  const uuidRegex =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  return uuidRegex.test(id);
+};
+
 const sanitize = (
   text: string | null | undefined,
   limit = MAX_SOURCE_CHARS,
@@ -45,9 +52,11 @@ export async function POST(request: Request) {
   }
 
   const body = await request.json().catch(() => ({}));
-  const sourceIds: string[] = Array.isArray(body.sourceIds)
+  const rawSourceIds: string[] = Array.isArray(body.sourceIds)
     ? body.sourceIds
     : [];
+  // Filter out non-UUID values (like temporary upload IDs)
+  const sourceIds = rawSourceIds.filter(isValidUUID);
   const numQuestions = Math.min(Math.max(body.numQuestions ?? 5, 3), 12);
   const userFocus: string =
     typeof body.userFocus === 'string' ? body.userFocus.trim() : '';

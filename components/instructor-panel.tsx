@@ -104,6 +104,7 @@ const saveSourceToAPI = async (
     skipEmbedding?: boolean;
     onEmbeddingStart?: (id: string) => void;
     onEmbeddingComplete?: (id: string) => void;
+    onEmbeddingError?: (id: string, error: string) => void;
   },
 ) => {
   try {
@@ -123,37 +124,75 @@ const saveSourceToAPI = async (
     if (!options?.skipEmbedding && savedSource.id && source.content) {
       options?.onEmbeddingStart?.(savedSource.id);
 
-      // Run embedding generation in background (don't await)
-      fetch('/api/rag/embed', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          sourceId: savedSource.id,
-          content: source.content,
-        }),
-      })
-        .then(async (embedResponse) => {
+      // Retry logic for embedding generation
+      const MAX_RETRIES = 3;
+      let retryCount = 0;
+
+      const attemptEmbedding = async () => {
+        try {
+          const embedResponse = await fetch('/api/rag/embed', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              sourceId: savedSource.id,
+              content: source.content,
+            }),
+          });
+
           if (embedResponse.ok) {
             const embedData = await embedResponse.json();
             console.log(
-              `[InstructorPanel] Successfully generated embeddings: ${embedData.chunksCount} chunks`,
+              `[InstructorPanel] Successfully generated embeddings for ${source.title}: ${embedData.chunksCount} chunks`,
             );
+            return true;
           } else {
-            console.warn(
-              '[InstructorPanel] Embedding generation failed:',
+            const errorText = await embedResponse.text();
+            console.error(
+              `[InstructorPanel] Embedding generation failed for ${source.title} (${savedSource.id}):`,
               embedResponse.status,
+              errorText,
             );
+
+            // Only retry for server errors (5xx), not client errors (4xx)
+            if (embedResponse.status >= 500 && retryCount < MAX_RETRIES) {
+              retryCount++;
+              console.log(
+                `[InstructorPanel] Retrying embedding (attempt ${retryCount}/${MAX_RETRIES})...`,
+              );
+              // Wait before retrying
+              await new Promise((resolve) => setTimeout(resolve, 2000));
+              return attemptEmbedding();
+            }
+
+            options?.onEmbeddingError?.(
+              savedSource.id,
+              `Failed to generate embeddings after ${MAX_RETRIES} retries`,
+            );
+            return false;
           }
-        })
-        .catch((embedError) => {
-          console.warn(
-            '[InstructorPanel] Failed to generate embeddings:',
-            embedError,
+        } catch (error) {
+          console.error(
+            `[InstructorPanel] Exception during embedding generation for ${source.title}:`,
+            error,
           );
-        })
-        .finally(() => {
-          options?.onEmbeddingComplete?.(savedSource.id);
-        });
+          if (retryCount < MAX_RETRIES) {
+            retryCount++;
+            console.log(
+              `[InstructorPanel] Retrying embedding (attempt ${retryCount}/${MAX_RETRIES})...`,
+            );
+            // Wait before retrying
+            await new Promise((resolve) => setTimeout(resolve, 2000));
+            return attemptEmbedding();
+          }
+          options?.onEmbeddingError?.(savedSource.id, String(error));
+          return false;
+        }
+      };
+
+      // Run embedding generation in background
+      attemptEmbedding().finally(() => {
+        options?.onEmbeddingComplete?.(savedSource.id);
+      });
     }
 
     return savedSource;
@@ -180,7 +219,7 @@ const deleteSourceFromAPI = async (sourceId: string) => {
   }
 };
 
-import { InstructorChat } from './instructor-chat';
+import { InstructorChat, type InstructorChatHandle } from './instructor-chat';
 import { MindMapViewer } from './mind-map-viewer';
 
 export function InstructorPanel({
@@ -228,6 +267,8 @@ export function InstructorPanel({
   const [mindMapData, setMindMapData] = React.useState<any>(null);
   const [mindMapLoading, setMindMapLoading] = React.useState(false);
   const [mindMapError, setMindMapError] = React.useState<string | null>(null);
+  const [mindMapFullscreen, setMindMapFullscreen] = React.useState(false);
+  const instructorChatRef = React.useRef<InstructorChatHandle>(null);
   const instructorChatId = React.useMemo(
     () => chatId || generateUUID(),
     [chatId],
@@ -547,6 +588,29 @@ export function InstructorPanel({
     quizNumQuestions,
     selectedChatModel,
   ]);
+
+  const handleMindMapNodeClick = React.useCallback(async (node: any) => {
+    if (!instructorChatRef.current) {
+      toast.error('Chat is not ready');
+      return;
+    }
+
+    // Close the mind map modal and focus on chat
+    setShowMindMapModal(false);
+
+    // Send message to instructor chat asking about the node
+    const message = {
+      content: `Tell me more about: ${node.label}`,
+      parts: [{ type: 'text', text: `Tell me more about: ${node.label}` }],
+    };
+
+    try {
+      await instructorChatRef.current.sendMessage(message);
+    } catch (error) {
+      console.error('Failed to send message:', error);
+      toast.error('Failed to ask about this topic');
+    }
+  }, []);
 
   const handleCreateMindMap = React.useCallback(async () => {
     if (enabledSources.size === 0) {
@@ -1091,6 +1155,13 @@ export function InstructorPanel({
                 return next;
               });
             },
+            onEmbeddingError: (id, error) => {
+              console.error(
+                `[Upload] Embedding failed for ${f.name} (${id}):`,
+                error,
+              );
+              toast.error(`Failed to index ${f.name}: ${error}`);
+            },
           },
         );
         console.log(`[Upload] Saved source ${savedSource.id} for ${f.name}`);
@@ -1499,6 +1570,13 @@ export function InstructorPanel({
                   return next;
                 });
               },
+              onEmbeddingError: (id, error) => {
+                console.error(
+                  `[Drive Upload] Embedding failed for ${doc.name} (${id}):`,
+                  error,
+                );
+                toast.error(`Failed to index ${doc.name}: ${error}`);
+              },
             },
           );
           items.push(savedSource);
@@ -1872,10 +1950,12 @@ export function InstructorPanel({
 
   return (
     <div className="flex flex-col h-dvh w-full overflow-hidden bg-background">
-      <div className="flex items-center justify-between px-4 py-3 border-b">
-        <h1 className="text-lg font-semibold">Instructor Mode</h1>
+      <div className="flex items-center justify-between px-3 py-1.5 border-b">
+        <h1 className="text-sm font-medium">Instructor</h1>
         <Button
-          variant="outline"
+          variant="ghost"
+          size="sm"
+          className="h-7 px-2 text-xs"
           onClick={() => {
             setActive(false);
             window.location.href = '/';
@@ -2444,17 +2524,10 @@ export function InstructorPanel({
           <div className="rounded-md border flex-1 p-0 overflow-hidden flex flex-col">
             <div className="px-4 py-2 border-b flex items-center justify-between bg-muted/50 flex-shrink-0">
               <h2 className="text-sm font-semibold">Instructor Chat</h2>
-              <div className="flex gap-2">
-                <Button size="sm" variant="outline" disabled>
-                  Summarize
-                </Button>
-                <Button size="sm" variant="outline" disabled>
-                  Extract Concepts
-                </Button>
-              </div>
             </div>
             <div className="flex-1 overflow-hidden">
               <InstructorChat
+                ref={instructorChatRef}
                 sources={sources}
                 enabledSourceIds={enabledSources}
                 chatId={instructorChatId}
@@ -2667,71 +2740,37 @@ export function InstructorPanel({
               </div>
 
               <div className="rounded-md border p-3 space-y-2">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <h3 className="text-xs font-semibold uppercase text-muted-foreground">
-                      Quick Actions
-                    </h3>
-                    <p className="text-xs text-muted-foreground">
-                      Finish a lesson faster with one-click helpers.
-                    </p>
-                  </div>
-                  <span className="text-[11px] text-muted-foreground">
-                    Shortcuts
-                  </span>
-                </div>
-                <div className="grid grid-cols-2 gap-2">
+                <div className="grid grid-cols-3 gap-2">
                   <Button
                     size="sm"
                     variant="outline"
-                    className="w-full justify-start text-xs"
+                    className="w-full justify-center text-xs h-8"
                     onClick={() => {
                       setQuizError(null);
                       setShowQuizModal(true);
                     }}
                   >
-                    🧪 Create quiz from sources
+                    🧪 Quiz
                   </Button>
                   <Button
                     size="sm"
                     variant="outline"
-                    className="w-full justify-start text-xs"
+                    className="w-full justify-center text-xs h-8"
                     onClick={() => {
                       setFlashcardError(null);
                       setShowFlashcardModal(true);
                     }}
                   >
-                    📇 Create flashcards
+                    📇 Flashcard
                   </Button>
                   <Button
                     size="sm"
                     variant="outline"
-                    className="w-full justify-start text-xs"
-                  >
-                    📤 Export notes
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="w-full justify-start text-xs"
-                  >
-                    🧭 Next learning step
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="w-full justify-start text-xs"
+                    className="w-full justify-center text-xs h-8"
                     onClick={handleCreateMindMap}
                     disabled={mindMapLoading}
                   >
-                    🗺️ Create mind map
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="w-full justify-start text-xs"
-                  >
-                    ✅ Create checklist
+                    🗺️ Mind Map
                   </Button>
                 </div>
               </div>
@@ -3364,7 +3403,11 @@ export function InstructorPanel({
           aria-modal="true"
         >
           <div
-            className="bg-background rounded-xl shadow-2xl w-full max-w-6xl mx-4 h-[85vh] flex flex-col border border-border"
+            className={`bg-background rounded-xl shadow-2xl flex flex-col border border-border transition-all ${
+              mindMapFullscreen
+                ? 'w-full h-full m-0 rounded-none'
+                : 'w-full max-w-6xl mx-4 h-[85vh]'
+            }`}
             onClick={(e) => e.stopPropagation()}
             onKeyDown={(e) => e.stopPropagation()}
             role="document"
@@ -3378,31 +3421,77 @@ export function InstructorPanel({
                 </p>
                 <h2 className="text-lg font-semibold">{mindMapData.title}</h2>
               </div>
-              <button
-                type="button"
-                className="text-muted-foreground hover:text-foreground transition-colors rounded-full p-2 hover:bg-muted"
-                onClick={() => setShowMindMapModal(false)}
-                aria-label="Close"
-              >
-                <svg
-                  className="w-5 h-5"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  className="text-muted-foreground hover:text-foreground transition-colors rounded-full p-2 hover:bg-muted"
+                  onClick={() => setMindMapFullscreen(!mindMapFullscreen)}
+                  aria-label={
+                    mindMapFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'
+                  }
+                  title={
+                    mindMapFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'
+                  }
                 >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M6 18L18 6M6 6l12 12"
-                  />
-                </svg>
-              </button>
+                  {mindMapFullscreen ? (
+                    <svg
+                      className="w-5 h-5"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M6 18L18 6M6 6l12 12M9 9H4v5m11 5h5v-5"
+                      />
+                    </svg>
+                  ) : (
+                    <svg
+                      className="w-5 h-5"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4"
+                      />
+                    </svg>
+                  )}
+                </button>
+                <button
+                  type="button"
+                  className="text-muted-foreground hover:text-foreground transition-colors rounded-full p-2 hover:bg-muted"
+                  onClick={() => setShowMindMapModal(false)}
+                  aria-label="Close"
+                >
+                  <svg
+                    className="w-5 h-5"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M6 18L18 6M6 6l12 12"
+                    />
+                  </svg>
+                </button>
+              </div>
             </div>
 
             {/* Mind Map Viewer */}
             <div className="flex-1 overflow-hidden">
-              <MindMapViewer data={mindMapData} />
+              <MindMapViewer
+                data={mindMapData}
+                onNodeClick={handleMindMapNodeClick}
+              />
             </div>
 
             {/* Footer */}

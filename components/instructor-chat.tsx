@@ -1,6 +1,13 @@
 'use client';
 
-import { useCallback, useRef, useState, useEffect } from 'react';
+import {
+  useCallback,
+  useRef,
+  useState,
+  useEffect,
+  forwardRef,
+  useImperativeHandle,
+} from 'react';
 import { useSession } from 'next-auth/react';
 import type { ChatStatus } from 'ai';
 
@@ -19,13 +26,17 @@ interface InstructorChatProps {
   onModelChange?: (model: string) => void;
 }
 
-export function InstructorChat({
-  sources,
-  enabledSourceIds,
-  onStoreNote,
-  chatId,
-  onModelChange,
-}: InstructorChatProps) {
+export interface InstructorChatHandle {
+  sendMessage: (message: { content: string; parts?: any[] }) => Promise<void>;
+}
+
+export const InstructorChat = forwardRef<
+  InstructorChatHandle,
+  InstructorChatProps
+>(function InstructorChat(
+  { sources, enabledSourceIds, onStoreNote, chatId, onModelChange },
+  ref,
+) {
   const { data: session } = useSession();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -122,8 +133,8 @@ export function InstructorChat({
               body: JSON.stringify({
                 query: userQuery,
                 sourceIds,
-                topK: 8,
-                similarityThreshold: 0.2, // more permissive to avoid zero hits
+                topK: 15, // Increased from 8 to get more comprehensive results across multiple sources
+                similarityThreshold: 0.15, // More permissive threshold for broader coverage
               }),
             });
 
@@ -311,6 +322,15 @@ No teaching materials are currently enabled. Provide helpful general guidance an
     [enabledSourceIds, chatId, isLoading, selectedModel, sources],
   );
 
+  // Expose sendMessage to parent via ref
+  useImperativeHandle(
+    ref,
+    () => ({
+      sendMessage,
+    }),
+    [sendMessage],
+  );
+
   const stop = useCallback(async () => {
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
@@ -402,4 +422,4 @@ No teaching materials are currently enabled. Provide helpful general guidance an
       </div>
     </div>
   );
-}
+});

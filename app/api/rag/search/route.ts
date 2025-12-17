@@ -85,7 +85,9 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    console.log(`[RAG Search] Searching across ${sourceChunks.length} chunks`);
+    console.log(
+      `[RAG Search] Searching across ${sourceChunks.length} chunks from ${new Set(sourceChunks.map((c) => c.sourceId)).size} sources`,
+    );
 
     // 3. Find relevant chunks using semantic similarity
     const relevantChunks = findRelevantChunks(
@@ -103,12 +105,21 @@ export async function POST(request: NextRequest) {
       `[RAG Search] Found ${relevantChunks.length} relevant chunks above threshold ${similarityThreshold}`,
     );
 
-    // 4. Map back to include sourceId and chunkIndex
+    // 4. Map back to include sourceId and chunkIndex with better tracking for multiple sources
     const results = relevantChunks.map((chunk) => {
-      // Find the original chunk to get metadata
-      const originalChunk = sourceChunks.find(
+      // Find all matching chunks by content
+      const matchingChunks = sourceChunks.filter(
         (sc) => sc.content === chunk.content,
       );
+
+      // If we have multiple matches, they come from different sources - use the first one
+      // In practice, identical content from different sources is rare
+      const originalChunk = matchingChunks[0];
+
+      console.log(
+        `[RAG Search] Chunk "${chunk.content.slice(0, 50)}..." matched to source: ${originalChunk?.sourceId || 'unknown'}`,
+      );
+
       return {
         content: chunk.content,
         relevance: chunk.similarity,

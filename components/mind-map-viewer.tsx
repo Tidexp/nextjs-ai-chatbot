@@ -15,6 +15,7 @@ interface MindMapData {
 
 interface MindMapViewerProps {
   data: MindMapData;
+  onNodeClick?: (node: MindMapNode) => void;
 }
 
 interface NodePosition {
@@ -23,7 +24,7 @@ interface NodePosition {
   collapsed: boolean;
 }
 
-export function MindMapViewer({ data }: MindMapViewerProps) {
+export function MindMapViewer({ data, onNodeClick }: MindMapViewerProps) {
   const svgRef = React.useRef<SVGSVGElement>(null);
   const containerRef = React.useRef<HTMLDivElement>(null);
 
@@ -34,6 +35,7 @@ export function MindMapViewer({ data }: MindMapViewerProps) {
   const [collapsedNodes, setCollapsedNodes] = React.useState<Set<string>>(
     new Set(),
   );
+  const [isInitialized, setIsInitialized] = React.useState(false);
 
   // Horizontal tree layout (left-to-right)
   // Compute subtree heights to space children vertically
@@ -86,6 +88,23 @@ export function MindMapViewer({ data }: MindMapViewerProps) {
 
   // Start layout from root at topY = 0
   assignPositions(data.root, 0, 0);
+
+  // Auto-focus on root node when component mounts
+  React.useEffect(() => {
+    if (!isInitialized && containerRef.current) {
+      const rootPos = positions.get(data.root.id);
+      if (rootPos) {
+        const container = containerRef.current;
+        const centerX = container.clientWidth / 2;
+        const centerY = container.clientHeight / 2;
+        setTranslate({
+          x: centerX - rootPos.x * scale,
+          y: centerY - rootPos.y * scale,
+        });
+        setIsInitialized(true);
+      }
+    }
+  }, [isInitialized, data.root.id, scale]);
 
   // Handle mouse wheel zoom
   const handleWheel = (e: React.WheelEvent) => {
@@ -233,7 +252,11 @@ export function MindMapViewer({ data }: MindMapViewerProps) {
               stroke={strokeColor}
               strokeWidth={2}
               className="cursor-pointer hover:opacity-90 transition-opacity"
-              onClick={() => hasChildren && toggleNode(node.id)}
+              onClick={() => {
+                if (onNodeClick) {
+                  onNodeClick(node);
+                }
+              }}
             />
           );
         })()}
@@ -245,8 +268,9 @@ export function MindMapViewer({ data }: MindMapViewerProps) {
           textAnchor="middle"
           dominantBaseline="middle"
           fill="#ffffff"
-          className="text-[12px] font-semibold pointer-events-none select-none"
-          style={{ maxWidth: `${nodeWidth - 16}px` }}
+          className="text-[12px] font-semibold select-none"
+          style={{ maxWidth: `${nodeWidth - 16}px`, cursor: 'pointer' }}
+          onClick={() => onNodeClick?.(node)}
         >
           {node.label.length > 20
             ? `${node.label.slice(0, 18)}...`
@@ -290,6 +314,22 @@ export function MindMapViewer({ data }: MindMapViewerProps) {
     return elements;
   };
 
+  // Center on root node
+  const centerOnRoot = () => {
+    if (containerRef.current) {
+      const rootPos = positions.get(data.root.id);
+      if (rootPos) {
+        const container = containerRef.current;
+        const centerX = container.clientWidth / 2;
+        const centerY = container.clientHeight / 2;
+        setTranslate({
+          x: centerX - rootPos.x * scale,
+          y: centerY - rootPos.y * scale,
+        });
+      }
+    }
+  };
+
   return (
     <div
       ref={containerRef}
@@ -322,7 +362,7 @@ export function MindMapViewer({ data }: MindMapViewerProps) {
           type="button"
           onClick={() => {
             setScale(1);
-            setTranslate({ x: 400, y: 300 });
+            centerOnRoot();
           }}
           className="w-10 h-10 rounded-lg bg-background border border-border hover:bg-muted flex items-center justify-center text-xs font-medium shadow-sm"
           title="Reset view"
