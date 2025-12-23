@@ -21,7 +21,8 @@ import {
   chunkText,
   estimateTokenCount,
 } from '@/lib/rag/embeddings';
-import { storeDocumentChunks } from '@/lib/rag/db';
+import { storeDocumentChunks, getSourceChunks } from '@/lib/rag/db';
+import { extractAndStoreGraphData } from '@/lib/rag/graph';
 import { auth } from '@/app/(auth)/auth';
 
 /**
@@ -184,6 +185,35 @@ export async function POST(request: NextRequest) {
     console.log(
       `[RAG Embed] Successfully stored ${chunkRecords.length} chunks for source ${sourceId}`,
     );
+
+    // 4. Extract entities and relations from chunks (Graph RAG)
+    console.log('[RAG Embed] Extracting entities for Graph RAG...');
+
+    try {
+      const storedChunks = await getSourceChunks(sourceId);
+      let totalEntities = 0;
+      let totalRelations = 0;
+
+      for (const chunk of storedChunks) {
+        const { entityCount, relationCount } = await extractAndStoreGraphData({
+          sourceId,
+          chunkId: (chunk as any).id,
+          text: (chunk as any).content,
+        });
+        totalEntities += entityCount;
+        totalRelations += relationCount;
+      }
+
+      console.log(
+        `[RAG Embed] Graph RAG: extracted ${totalEntities} entities, ${totalRelations} relations`,
+      );
+    } catch (graphError) {
+      console.warn(
+        '[RAG Embed] Graph extraction failed (non-fatal):',
+        graphError,
+      );
+      // Don't fail the whole operation if graph extraction fails
+    }
 
     return NextResponse.json({
       success: true,

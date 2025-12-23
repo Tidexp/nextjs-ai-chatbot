@@ -535,3 +535,72 @@ export const documentChunk = pgTable('DocumentChunk', {
 });
 
 export type DocumentChunk = InferSelectModel<typeof documentChunk>;
+
+// Graph RAG entities extracted from chunks
+export const graphEntity = pgTable(
+  'GraphEntity',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    sourceId: uuid('sourceId')
+      .notNull()
+      .references(() => instructorSource.id, { onDelete: 'cascade' }),
+    chunkId: uuid('chunkId').references(() => documentChunk.id, {
+      onDelete: 'cascade',
+    }),
+    label: text('label').notNull(),
+    type: varchar('type', { length: 64 }).notNull().default('entity'),
+    canonicalLabel: text('canonicalLabel'),
+    metadata: json('metadata'),
+    createdAt: timestamp('createdAt').notNull().defaultNow(),
+  },
+  (table) => ({
+    // Avoid duplicate entities per source by label+type
+    uniqueLabel: unique('unique_entity_per_source_label').on(
+      table.sourceId,
+      table.label,
+      table.type,
+    ),
+  }),
+);
+
+export type GraphEntity = InferSelectModel<typeof graphEntity>;
+
+// Graph RAG relationships between entities
+export const graphRelation = pgTable(
+  'GraphRelation',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    sourceId: uuid('sourceId')
+      .notNull()
+      .references(() => instructorSource.id, { onDelete: 'cascade' }),
+    fromEntityId: uuid('fromEntityId')
+      .notNull()
+      .references(() => graphEntity.id, { onDelete: 'cascade' }),
+    toEntityId: uuid('toEntityId')
+      .notNull()
+      .references(() => graphEntity.id, { onDelete: 'cascade' }),
+    relationType: varchar('relationType', { length: 64 })
+      .notNull()
+      .default('co_occurs'),
+    evidenceChunkId: uuid('evidenceChunkId').references(
+      () => documentChunk.id,
+      {
+        onDelete: 'set null',
+      },
+    ),
+    weight: real('weight').default(1),
+    metadata: json('metadata'),
+    createdAt: timestamp('createdAt').notNull().defaultNow(),
+  },
+  (table) => ({
+    // Prevent duplicate edges of same type between two nodes within a source
+    uniqueEdge: unique('unique_relation').on(
+      table.sourceId,
+      table.fromEntityId,
+      table.toEntityId,
+      table.relationType,
+    ),
+  }),
+);
+
+export type GraphRelation = InferSelectModel<typeof graphRelation>;

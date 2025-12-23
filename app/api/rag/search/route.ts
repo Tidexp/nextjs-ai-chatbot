@@ -28,7 +28,8 @@ import {
   findRelevantChunks,
   formatContextForLLM,
 } from '@/lib/rag/embeddings';
-import { getChunksFromSources } from '@/lib/rag/db';
+import { getChunksFromSources, getChunksByEntities } from '@/lib/rag/db';
+import { extractEntities } from '@/lib/rag/graph';
 import { auth } from '@/app/(auth)/auth';
 
 export async function POST(request: NextRequest) {
@@ -89,7 +90,7 @@ export async function POST(request: NextRequest) {
       `[RAG Search] Searching across ${sourceChunks.length} chunks from ${new Set(sourceChunks.map((c) => c.sourceId)).size} sources`,
     );
 
-    // 3. Find relevant chunks using semantic similarity
+    // 3. Find relevant chunks using semantic similarity (vector search)
     const relevantChunks = findRelevantChunks(
       queryEmbedding,
       sourceChunks.map((chunk) => ({
@@ -102,11 +103,76 @@ export async function POST(request: NextRequest) {
     );
 
     console.log(
-      `[RAG Search] Found ${relevantChunks.length} relevant chunks above threshold ${similarityThreshold}`,
+      `[RAG Search] Vector search: ${relevantChunks.length} relevant chunks`,
+    );
+
+    // 3b. Graph RAG: Extract entities from query and find related chunks
+    let graphChunks: Array<{ content: string; matchedEntities: string[] }> = [];
+    try {
+      const queryEntities = await extractEntities(query);
+      if (queryEntities.length > 0) {
+        console.log(
+          `[RAG Search] Query entities: ${queryEntities.map((e) => e.label).join(', ')}`,
+        );
+        const entityResults = await getChunksByEntities({
+          sourceIds,
+          entityLabels: queryEntities.map((e) => e.label),
+        });
+        graphChunks = entityResults;
+        console.log(
+          `[RAG Search] Graph search: ${graphChunks.length} entity-matched chunks`,
+        );
+      }
+    } catch (graphError) {
+      console.warn('[RAG Search] Graph search failed (non-fatal):', graphError);
+    }
+
+    // 3c. Merge vector and graph results (prefer chunks appearing in both)
+    const mergedContent = new Map<string, any>();
+
+    // Add vector search results
+    for (const chunk of relevantChunks) {
+      mergedContent.set(chunk.content, {
+        ...chunk,
+        vectorScore: chunk.similarity,
+        graphScore: 0,
+        matchedEntities: [],
+      });
+    }
+
+    // Boost chunks that also match entities
+    for (const graphChunk of graphChunks) {
+      if (mergedContent.has(graphChunk.content)) {
+        const existing = mergedContent.get(graphChunk.content);
+        existing.graphScore = 1;
+        existing.matchedEntities = graphChunk.matchedEntities;
+      } else if (mergedContent.size < topK * 2) {
+        // Add high-quality graph results even if vector score was low
+        mergedContent.set(graphChunk.content, {
+          content: graphChunk.content,
+          vectorScore: 0,
+          graphScore: 1,
+          similarity: similarityThreshold, // Treat as threshold match
+          matchedEntities: graphChunk.matchedEntities,
+        });
+      }
+    }
+
+    // Sort by hybrid score (vector + graph boost)
+    const hybridChunks = Array.from(mergedContent.values())
+      .map((chunk) => ({
+        ...chunk,
+        hybridScore: chunk.vectorScore + chunk.graphScore * 0.3, // 30% boost for entity match
+      }))
+      .sort((a, b) => b.hybridScore - a.hybridScore)
+      .slice(0, topK);
+
+    console.log(
+      `[RAG Search] Hybrid result: ${hybridChunks.length} chunks (${hybridChunks.filter((c) => c.graphScore > 0).length} with entity matches)`,
     );
 
     // 4. Map back to include sourceId and chunkIndex with better tracking for multiple sources
-    const results = relevantChunks.map((chunk) => {
+    const results = hybridChunks.map((chunk) => {
       // Find all matching chunks by content
       const matchingChunks = sourceChunks.filter(
         (sc) => sc.content === chunk.content,
@@ -129,7 +195,7 @@ export async function POST(request: NextRequest) {
     });
 
     // 5. Format results for LLM context
-    const formattedContext = formatContextForLLM(relevantChunks);
+    const formattedContext = formatContextForLLM(hybridChunks);
 
     return NextResponse.json({
       success: true,
