@@ -158,11 +158,15 @@ export function findRelevantChunks(
       index: chunk.index,
       similarity: cosineSimilarity(queryEmbedding, chunk.embedding),
     }))
-    .filter((chunk) => chunk.similarity >= threshold)
-    .sort((a, b) => b.similarity - a.similarity)
-    .slice(0, topK);
+    .sort((a, b) => b.similarity - a.similarity);
 
-  return scoredChunks;
+  const passing = scoredChunks.filter((chunk) => chunk.similarity >= threshold);
+  if (passing.length > 0) {
+    return passing.slice(0, topK);
+  }
+
+  // Fallback: return best topK even if below threshold to avoid empty results
+  return scoredChunks.slice(0, topK);
 }
 
 /**

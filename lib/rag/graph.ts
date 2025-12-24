@@ -1,6 +1,9 @@
 import { HfInference } from '@huggingface/inference';
 
-import { GraphEntityInput, storeGraphEntitiesAndRelations } from '@/lib/rag/db';
+import {
+  type GraphEntityInput,
+  storeGraphEntitiesAndRelations,
+} from '@/lib/rag/db';
 
 const hf = new HfInference(process.env.HUGGINGFACE_API_KEY);
 const NER_MODEL = 'dslim/bert-base-NER';
