@@ -1,6 +1,7 @@
 import { HfInference } from '@huggingface/inference';
 
 import {
+  type DirectedTriplet,
   type GraphEntityInput,
   storeGraphEntitiesAndRelations,
 } from '@/lib/rag/db';
@@ -91,21 +92,38 @@ export async function extractEntities(
 }
 
 /**
- * Extract entities from a chunk of text and store co-occurrence relations.
- * Keeps everything in PostgreSQL for a zero-cost, reversible graph layer.
+ * Extract entities from a chunk of text and store with directed triplets.
+ * Updated for READ-TIME dynamic scoring architecture.
+ * Pass triplets for directed relationships (e.g., prerequisite_of, implements).
  */
 export async function extractAndStoreGraphData(options: {
   sourceId: string;
   chunkId?: string;
   text: string;
+  triplets?: DirectedTriplet[]; // Optional directed relationships
+  sourceMetadata?: Record<string, any>;
+  version?: number;
+  isLatestVersion?: boolean;
 }): Promise<{ entityCount: number; relationCount: number }> {
-  const { sourceId, chunkId, text } = options;
+  const {
+    sourceId,
+    chunkId,
+    text,
+    triplets,
+    sourceMetadata,
+    version,
+    isLatestVersion,
+  } = options;
   const entities = await extractEntities(text);
 
   const { entityIds, relationCount } = await storeGraphEntitiesAndRelations({
     sourceId,
     chunkId,
     entities,
+    triplets, // Pass directed relationships
+    sourceMetadata,
+    version,
+    isLatestVersion,
   });
 
   return { entityCount: entityIds.length, relationCount };

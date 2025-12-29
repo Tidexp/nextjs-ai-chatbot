@@ -107,7 +107,11 @@ export async function POST(request: NextRequest) {
     );
 
     // 3b. Graph RAG: Extract entities from query and find related chunks
-    let graphChunks: Array<{ content: string; matchedEntities: string[] }> = [];
+    let graphChunks: Array<{
+      content: string;
+      matchedEntities: string[];
+      graphScore: number;
+    }> = [];
     try {
       const queryEntities = await extractEntities(query);
       if (queryEntities.length > 0) {
@@ -140,29 +144,30 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    // Boost chunks that also match entities
+    // Boost chunks that also match entities (using dynamic graphScore)
     for (const graphChunk of graphChunks) {
       if (mergedContent.has(graphChunk.content)) {
         const existing = mergedContent.get(graphChunk.content);
-        existing.graphScore = 1;
+        existing.graphScore = graphChunk.graphScore;
         existing.matchedEntities = graphChunk.matchedEntities;
       } else if (mergedContent.size < topK * 2) {
         // Add high-quality graph results even if vector score was low
         mergedContent.set(graphChunk.content, {
           content: graphChunk.content,
           vectorScore: 0,
-          graphScore: 1,
+          graphScore: graphChunk.graphScore,
           similarity: similarityThreshold, // Treat as threshold match
           matchedEntities: graphChunk.matchedEntities,
         });
       }
     }
 
-    // Sort by hybrid score (vector + graph boost)
+    // Sort by hybrid score (vector + weighted graph boost)
+    // HybridScore = VectorSimilarity + (0.3 * GraphScore)
     const hybridChunks = Array.from(mergedContent.values())
       .map((chunk) => ({
         ...chunk,
-        hybridScore: chunk.vectorScore + chunk.graphScore * 0.3, // 30% boost for entity match
+        hybridScore: chunk.vectorScore + chunk.graphScore * 0.3,
       }))
       .sort((a, b) => b.hybridScore - a.hybridScore)
       .slice(0, topK);
