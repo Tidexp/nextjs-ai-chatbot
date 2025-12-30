@@ -4,6 +4,7 @@ import { eq, desc, and } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
 import { NextResponse } from 'next/server';
+import { autoDetectSourceMetadata } from '@/lib/rag/source-reliability-auto';
 
 // biome-ignore lint: Forbidden non-null assertion.
 const client = postgres(process.env.POSTGRES_URL!);
@@ -71,6 +72,18 @@ export async function POST(request: Request) {
     const sanitizedExcerpt = sanitizeText(excerpt);
     const sanitizedTitle = sanitizeText(title) || 'Untitled';
 
+    // Automatically detect source reliability metadata
+    const autoMetadata = autoDetectSourceMetadata({
+      sourceUrl,
+      title: sanitizedTitle,
+      type,
+      metadata: metadata || {},
+    });
+
+    console.log(
+      `[Source Creation] Auto-detected metadata: sourceType=${autoMetadata.sourceType}, isVerified=${autoMetadata.isVerified}, trustScore=${autoMetadata.trustScore}`,
+    );
+
     const [newSource] = await db
       .insert(instructorSource)
       .values({
@@ -80,7 +93,7 @@ export async function POST(request: Request) {
         excerpt: sanitizedExcerpt,
         content: sanitizedContent,
         sourceUrl: sourceUrl || null,
-        metadata: metadata || null,
+        metadata: autoMetadata,
       })
       .returning();
 

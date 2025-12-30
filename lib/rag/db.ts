@@ -133,55 +133,50 @@ export type GraphEntityInput = {
 function getSemanticWeight(relationType: string): number {
   const weights: Record<string, number> = {
     // --- Domain: Code Structure (Programming) ---
-    defines: 3.5, // Definition relationships (class/function definitions)
-    implements: 3.0, // Implementation of interfaces/contracts
-    extends: 3.0, // Inheritance relationships
-    imports: 1.8, // File/module dependencies
+    defines: 1.0, // Definition relationships (class/function definitions)
+    implements: 0.9, // Implementation of interfaces/contracts
+    extends: 0.85, // Inheritance relationships
+    imports: 0.8, // File/module dependencies
 
     // --- Domain: Pedagogy (Educational Logic) ---
-    prerequisite_of: 3.5, // Prerequisites are critical for learning paths
-    explains: 3.0, // Explanatory relationships between concepts
-    follows: 2.5, // Sequential order in curriculum
+    prerequisite_of: 0.9, // Prerequisites are critical for learning paths
+    explains: 0.8, // Explanatory relationships between concepts
+    follows: 0.7, // Sequential order in curriculum
 
     // --- General ---
-    contains: 2.5,
-    references: 2.0,
-    uses: 1.5,
-    relates_to: 1.2,
-    co_occurs: 1.0, // Default co-occurrence
+    contains: 0.7,
+    references: 0.6,
+    uses: 0.75,
+    relates_to: 0.3,
+    co_occurs: 0.2, // Weakest - just co-occurrence
   };
-  return weights[relationType] || 1.0;
+  return weights[relationType] || 0.3;
 }
 
 /**
  * Get source reliability score based on source type and metadata.
- * Adjusted for educational and technical documentation quality.
+ * Normalized to 0.5-1.0 range for reasonable weight scaling.
  */
 function getSourceReliability(sourceMetadata?: Record<string, any>): number {
-  if (!sourceMetadata) return 1.0;
+  if (!sourceMetadata) return 0.75; // Default moderate reliability
 
   const sourceType = sourceMetadata.sourceType ?? 'other';
   const isVerified = sourceMetadata.isVerified ?? false;
-  const trustScore = sourceMetadata.trustScore ?? 0;
+  const trustScore = sourceMetadata.trustScore ?? 70; // Default instructor score
 
-  // Base reliability by source type
-  let baseReliability = 1.0;
-  if (sourceType === 'official') baseReliability = 1.4;
-  else if (sourceType === 'instructor') baseReliability = 1.3;
-  else if (sourceType === 'tutorial') baseReliability = 1.0;
-  else if (sourceType === 'ai_generated') baseReliability = 0.8;
-  else if (sourceType === 'unverified') baseReliability = 0.6;
+  // Trust score is primary factor (0-100 → 0.5-1.0)
+  let reliability = 0.5 + trustScore / 200;
 
-  // Verification boost
-  if (isVerified) baseReliability *= 1.1;
+  // Source type adjustment (small boost/penalty)
+  if (sourceType === 'official') reliability *= 1.05;
+  else if (sourceType === 'instructor') reliability *= 1.0; // No change
+  else if (sourceType === 'ai_generated') reliability *= 0.9;
+  else if (sourceType === 'unverified') reliability *= 0.85;
 
-  // Trust score adjustment (0-100 → 0.5-1.5 multiplier)
-  if (trustScore > 0) {
-    const trustMultiplier = 0.5 + trustScore / 100;
-    baseReliability *= trustMultiplier;
-  }
+  // Verification boost (small)
+  if (isVerified) reliability *= 1.05;
 
-  return Math.max(0.5, Math.min(1.5, baseReliability));
+  return Math.max(0.5, Math.min(1.0, reliability));
 }
 
 /**
@@ -295,8 +290,30 @@ export async function storeGraphEntitiesAndRelations(options: {
 
   // Build entity label -> id map
   const entityMap = new Map<string, string>();
+  const canonicalMap = new Map<string, string>(); // Map canonical form to entity id
   for (const entity of entitiesInDb) {
-    entityMap.set((entity as any).label, (entity as any).id);
+    const label = (entity as any).label;
+    const canonical = label.toLowerCase().trim();
+    entityMap.set(label, (entity as any).id);
+    canonicalMap.set(canonical, (entity as any).id);
+  }
+
+  // Helper to find entity id with fuzzy matching
+  function findEntityId(label: string): string | undefined {
+    // Try exact match first
+    if (entityMap.has(label)) return entityMap.get(label);
+
+    // Try canonical (lowercase) match
+    const canonical = label.toLowerCase().trim();
+    if (canonicalMap.has(canonical)) return canonicalMap.get(canonical);
+
+    // Try removing quotes/special characters
+    const cleaned = canonical.replace(/^['"`]+|['"`]+$/g, '').trim();
+    if (cleaned !== canonical && canonicalMap.has(cleaned)) {
+      return canonicalMap.get(cleaned);
+    }
+
+    return undefined;
   }
 
   // Process directed triplets
@@ -310,10 +327,15 @@ export async function storeGraphEntitiesAndRelations(options: {
   }> = [];
 
   for (const triplet of triplets) {
-    const subjectId = entityMap.get(triplet.subject);
-    const objectId = entityMap.get(triplet.object);
+    const subjectId = findEntityId(triplet.subject);
+    const objectId = findEntityId(triplet.object);
 
-    if (!subjectId || !objectId || subjectId === objectId) continue;
+    if (!subjectId || !objectId || subjectId === objectId) {
+      console.log(
+        `[Graph] Triplet skipped: "${triplet.subject}" -> "${triplet.object}" (subject found: ${!!subjectId}, object found: ${!!objectId})`,
+      );
+      continue;
+    }
 
     // Calculate baseWeight WITHOUT temporal decay (store for read-time calculation)
     const semanticWeight = getSemanticWeight(triplet.predicate);
@@ -502,11 +524,11 @@ export async function getChunksByEntities(options: {
         ce.matched_labels,
         ce.related_labels,
         COUNT(r.id) AS relation_count,
-        -- Weighted average with temporal decay
+        -- Weighted average with temporal decay (with minimum decay factor of 0.3)
         AVG(
-          r.weight * EXP(-${temporalDecayRate} * 
+          r.weight * GREATEST(0.3, EXP(-${temporalDecayRate} * 
             GREATEST(0, EXTRACT(EPOCH FROM (NOW() - r.created_at)) / 86400)
-          )
+          ))
         ) AS avg_decayed_weight
       FROM chunk_entities ce
       LEFT JOIN all_relations r 

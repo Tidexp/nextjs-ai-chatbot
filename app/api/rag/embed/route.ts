@@ -23,7 +23,16 @@ import {
 } from '@/lib/rag/embeddings';
 import { storeDocumentChunks, getSourceChunks } from '@/lib/rag/db';
 import { extractAndStoreGraphData } from '@/lib/rag/graph';
+import { autoDetectSourceMetadata } from '@/lib/rag/source-reliability-auto';
 import { auth } from '@/app/(auth)/auth';
+import { instructorSource } from '@/lib/db/schema';
+import { eq } from 'drizzle-orm';
+import { drizzle } from 'drizzle-orm/postgres-js';
+import postgres from 'postgres';
+
+// biome-ignore lint: Forbidden non-null assertion.
+const client = postgres(process.env.POSTGRES_URL!);
+const db = drizzle(client);
 
 /**
  * Sanitize text content to remove null bytes and control characters
@@ -190,15 +199,90 @@ export async function POST(request: NextRequest) {
     console.log('[RAG Embed] Extracting entities for Graph RAG...');
 
     try {
+      // Fetch source metadata for reliability scoring
+      const sourceRecords = await db
+        .select()
+        .from(instructorSource)
+        .where(eq(instructorSource.id, sourceId))
+        .limit(1);
+
+      if (sourceRecords.length === 0) {
+        throw new Error(`Source ${sourceId} not found`);
+      }
+
+      const sourceRecord = sourceRecords[0];
+
+      // Build source metadata for reliability calculation
+      // Note: sourceRecord.type is file type (markdown/code/pdf/image)
+      //       sourceType for reliability should come from metadata
+      const sourceMetadata = await autoDetectSourceMetadata({
+        sourceUrl: sourceRecord.sourceUrl,
+        title: sourceRecord.title,
+        contentPreview: sourceRecord.content?.slice(0, 1000), // Add preview
+        metadata: sourceRecord.metadata as Record<string, any> | undefined,
+        useGeminiAssessment: true, // Enable Gemini
+      });
+
+      // Determine version info (check if this is latest by comparing dates)
+      const version = (sourceRecord.metadata as any)?.version ?? 1;
+
+      // Check if this is the latest version (only compare with same-topic sources)
+      // Import topic similarity detection
+      const { findSameTopicSources } = await import(
+        '@/lib/rag/source-topic-similarity'
+      );
+
+      // Get all user sources to find same-topic ones
+      const allUserSources = await db
+        .select({
+          id: instructorSource.id,
+          title: instructorSource.title,
+          createdAt: instructorSource.createdAt,
+        })
+        .from(instructorSource)
+        .where(eq(instructorSource.userId, sourceRecord.userId));
+
+      // Find sources about the same topic using semantic similarity
+      const sameTopicSources = await findSameTopicSources(
+        sourceRecord.title,
+        allUserSources.map((s) => ({
+          id: s.id,
+          title: s.title,
+          createdAt: s.createdAt,
+        })),
+      );
+
+      // Sort same-topic sources by creation date
+      const sortedSameTopic = sameTopicSources.sort(
+        (a, b) => a.createdAt.getTime() - b.createdAt.getTime(),
+      );
+
+      // Check if current source is the latest among same-topic sources
+      const isLatestVersion =
+        sortedSameTopic.length > 0 &&
+        sourceRecord.id === sortedSameTopic[sortedSameTopic.length - 1].id;
+
+      console.log(
+        `[RAG Embed] Source metadata: type=${sourceMetadata.sourceType}, verified=${sourceMetadata.isVerified}, trustScore=${sourceMetadata.trustScore}, version=${version}, isLatest=${isLatestVersion}`,
+      );
+
       const storedChunks = await getSourceChunks(sourceId);
       let totalEntities = 0;
       let totalRelations = 0;
 
       for (const chunk of storedChunks) {
+        // Extract triplets from text for semantic relationships
+        const { extractTriplets } = await import('@/lib/rag/graph');
+        const triplets = await extractTriplets((chunk as any).content);
+
         const { entityCount, relationCount } = await extractAndStoreGraphData({
           sourceId,
           chunkId: (chunk as any).id,
           text: (chunk as any).content,
+          triplets,
+          sourceMetadata, // ← Now passing source reliability metadata
+          version, // ← Now passing version info
+          isLatestVersion, // ← Now passing latest version flag
         });
         totalEntities += entityCount;
         totalRelations += relationCount;

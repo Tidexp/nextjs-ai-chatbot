@@ -19,6 +19,7 @@
     "db:test": "tsx scripts/test-db-connection.ts",
     "db:test-chat": "tsx scripts/test-chat-creation.ts",
     "graph:inspect": "tsx scripts/inspect-graph-rag.ts",
+    "test:semantic-weights": "tsx scripts/test-semantic-weights.ts",
     "test": "export PLAYWRIGHT=True && pnpm exec playwright test"
   },
   "dependencies": {
