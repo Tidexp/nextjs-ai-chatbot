@@ -513,6 +513,10 @@ export const instructorSource = pgTable('InstructorSource', {
   content: text('content'),
   sourceUrl: text('sourceUrl'),
   metadata: json('metadata'),
+  // Reliability fields (Gemini + heuristics)
+  reliabilitySourceType: varchar('reliabilitySourceType', { length: 32 }),
+  reliabilityTrustScore: integer('reliabilityTrustScore'),
+  reliabilityAssessment: text('reliabilityAssessment'),
   createdAt: timestamp('createdAt').notNull().defaultNow(),
   updatedAt: timestamp('updatedAt').notNull().defaultNow(),
 });

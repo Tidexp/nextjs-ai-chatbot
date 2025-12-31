@@ -223,6 +223,18 @@ export async function POST(request: NextRequest) {
         useGeminiAssessment: true, // Enable Gemini
       });
 
+      // Persist updated reliability metadata back to the source record
+      await db
+        .update(instructorSource)
+        .set({
+          metadata: sourceMetadata,
+          reliabilitySourceType: sourceMetadata.sourceType,
+          reliabilityTrustScore: sourceMetadata.trustScore,
+          reliabilityAssessment: sourceMetadata.geminiAssessment,
+          updatedAt: new Date(),
+        })
+        .where(eq(instructorSource.id, sourceId));
+
       // Determine version info (check if this is latest by comparing dates)
       const version = (sourceRecord.metadata as any)?.version ?? 1;
 

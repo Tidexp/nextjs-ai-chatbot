@@ -160,16 +160,21 @@ function getSemanticWeight(relationType: string): number {
 function getSourceReliability(sourceMetadata?: Record<string, any>): number {
   if (!sourceMetadata) return 0.75; // Default moderate reliability
 
-  const sourceType = sourceMetadata.sourceType ?? 'other';
+  const sourceType =
+    sourceMetadata.reliabilitySourceType ??
+    sourceMetadata.sourceType ??
+    'other';
   const isVerified = sourceMetadata.isVerified ?? false;
-  const trustScore = sourceMetadata.trustScore ?? 70; // Default instructor score
+  const trustScore =
+    sourceMetadata.reliabilityTrustScore ?? sourceMetadata.trustScore ?? 70; // Default instructor score
 
   // Trust score is primary factor (0-100 → 0.5-1.0)
   let reliability = 0.5 + trustScore / 200;
 
   // Source type adjustment (small boost/penalty)
   if (sourceType === 'official') reliability *= 1.05;
-  else if (sourceType === 'instructor') reliability *= 1.0; // No change
+  else if (sourceType === 'instructor')
+    reliability *= 1.0; // No change
   else if (sourceType === 'ai_generated') reliability *= 0.9;
   else if (sourceType === 'unverified') reliability *= 0.85;
 
@@ -343,6 +348,11 @@ export async function storeGraphEntitiesAndRelations(options: {
     const versioningBoost = getVersioningBoost(version, isLatestVersion);
 
     const baseWeight = semanticWeight * sourceReliability * versioningBoost;
+
+    // Debug log for weight composition
+    console.log(
+      `[Graph Weight] source=${sourceId} predicate=${triplet.predicate} semantic=${semanticWeight.toFixed(3)} reliability=${sourceReliability.toFixed(3)} versionBoost=${versioningBoost.toFixed(3)} -> baseWeight=${baseWeight.toFixed(3)}`,
+    );
 
     relationRows.push({
       sourceId,

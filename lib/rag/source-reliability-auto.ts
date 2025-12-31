@@ -52,6 +52,22 @@ function detectSourceType(
   return 'instructor';
 }
 
+function normalizeSourceType(value?: string, fallback = 'instructor') {
+  const normalized = (value || '').trim().toLowerCase();
+
+  if (
+    normalized === 'official' ||
+    normalized === 'instructor' ||
+    normalized === 'tutorial' ||
+    normalized === 'ai_generated' ||
+    normalized === 'unverified'
+  ) {
+    return normalized;
+  }
+
+  return fallback;
+}
+
 /**
  * Use Gemini 2.0 Flash Lite to assess content reliability
  * Analyzes quality, authoritativeness, and potential bias
@@ -62,6 +78,7 @@ async function assessContentReliabilityWithGemini(
   metadata?: Record<string, any>,
 ): Promise<{
   trustScore: number;
+  sourceType?: string;
   assessment: string;
   factors: Record<string, any>;
 }> {
@@ -91,6 +108,7 @@ Analyze on a scale of 0-100 considering:
 Respond with ONLY a JSON object (no markdown, no code blocks):
 {
   "score": <0-100>,
+  "sourceType": "official|instructor|tutorial|ai_generated|unverified",
   "factors": {
     "clarity": <0-100>,
     "accuracy": <0-100>,
@@ -119,6 +137,7 @@ Respond with ONLY a JSON object (no markdown, no code blocks):
 
     return {
       trustScore: Math.min(100, Math.max(0, parsed.score || 65)),
+      sourceType: normalizeSourceType(parsed.sourceType),
       assessment: parsed.summary || 'No assessment available',
       factors: parsed.factors || {},
     };
@@ -130,6 +149,7 @@ Respond with ONLY a JSON object (no markdown, no code blocks):
     // Return neutral assessment on error
     return {
       trustScore: 65,
+      sourceType: undefined,
       assessment: 'Assessment unavailable',
       factors: {},
     };
@@ -189,7 +209,7 @@ export async function autoDetectSourceMetadata(options: {
   } = options;
 
   // Detect source type (defaults to 'instructor' for local/Drive files)
-  const detectedSourceType = detectSourceType(
+  const fallbackDetectedSourceType = detectSourceType(
     existingMetadata,
     options.sourceUrl,
   );
@@ -199,6 +219,7 @@ export async function autoDetectSourceMetadata(options: {
   const isVerified = existingMetadata.isVerified ?? false;
 
   let trustScore: number;
+  let geminiSourceType: string | undefined;
   let geminiAssessment: Record<string, any> = {};
 
   // Use Gemini for intelligent assessment if content preview is available
@@ -215,6 +236,7 @@ export async function autoDetectSourceMetadata(options: {
       );
 
       trustScore = result.trustScore;
+      geminiSourceType = result.sourceType;
       geminiAssessment = {
         geminiAssessment: result.assessment,
         geminiFactors: result.factors,
@@ -229,22 +251,32 @@ export async function autoDetectSourceMetadata(options: {
         error,
       );
       trustScore = calculateTrustScoreFallback(
-        detectedSourceType,
+        fallbackDetectedSourceType,
         existingMetadata,
       );
     }
   } else {
     // Fall back to fast heuristic-based scoring
     trustScore = calculateTrustScoreFallback(
-      detectedSourceType,
+      fallbackDetectedSourceType,
       existingMetadata,
     );
   }
 
+  // Finalize source type priority:
+  // - If metadata has a non-default sourceType, keep it.
+  // - Otherwise prefer Gemini's classification when present.
+  // - Otherwise fallback to heuristic detection (defaults to instructor for uploads).
+  const explicitSourceType = normalizeSourceType(existingMetadata.sourceType);
+  const finalSourceType =
+    explicitSourceType && explicitSourceType !== 'instructor'
+      ? explicitSourceType
+      : normalizeSourceType(geminiSourceType, fallbackDetectedSourceType);
+
   // Merge with existing metadata (preserve technical metadata like fileName, driveId, etc.)
   return {
     ...existingMetadata,
-    sourceType: detectedSourceType,
+    sourceType: finalSourceType,
     isVerified,
     trustScore,
     ...geminiAssessment,

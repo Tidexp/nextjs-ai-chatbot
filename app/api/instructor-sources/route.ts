@@ -73,7 +73,7 @@ export async function POST(request: Request) {
     const sanitizedTitle = sanitizeText(title) || 'Untitled';
 
     // Automatically detect source reliability metadata
-    const autoMetadata = autoDetectSourceMetadata({
+    const autoMetadata = await autoDetectSourceMetadata({
       sourceUrl,
       title: sanitizedTitle,
       type,
