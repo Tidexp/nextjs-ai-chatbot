@@ -5,6 +5,43 @@ import {
 import Link from 'next/link';
 import { unstable_cache } from 'next/cache';
 
+// Color gradients matching the topic explorer
+const colorSchemes = [
+  {
+    header: 'from-rose-500/25 via-fuchsia-500/25 to-indigo-500/25',
+    text: 'from-rose-600 to-indigo-600',
+    hover: 'from-rose-500/10 via-fuchsia-500/10 to-indigo-500/10',
+  },
+  {
+    header: 'from-sky-500/25 via-cyan-500/25 to-teal-500/25',
+    text: 'from-sky-600 to-teal-600',
+    hover: 'from-sky-500/10 via-cyan-500/10 to-teal-500/10',
+  },
+  {
+    header: 'from-emerald-500/25 via-lime-500/25 to-yellow-500/25',
+    text: 'from-emerald-600 to-yellow-600',
+    hover: 'from-emerald-500/10 via-lime-500/10 to-yellow-500/10',
+  },
+  {
+    header: 'from-orange-500/25 via-rose-500/25 to-pink-500/25',
+    text: 'from-orange-600 to-pink-600',
+    hover: 'from-orange-500/10 via-rose-500/10 to-pink-500/10',
+  },
+  {
+    header: 'from-indigo-500/25 via-purple-500/25 to-pink-500/25',
+    text: 'from-indigo-600 to-pink-600',
+    hover: 'from-indigo-500/10 via-purple-500/10 to-pink-500/10',
+  },
+];
+
+function getColorScheme(topicId: string) {
+  // Use topic ID to consistently pick a color
+  const hash = topicId
+    .split('')
+    .reduce((acc, char) => acc + char.charCodeAt(0), 0);
+  return colorSchemes[hash % colorSchemes.length];
+}
+
 // Enable dynamic rendering but with caching
 export const dynamic = 'force-static';
 export const revalidate = 300; // Revalidate every 5 minutes
@@ -37,6 +74,8 @@ export default async function TopicPage({
     modulesAndLessons = [];
   }
 
+  const colors = getColorScheme(topic.id);
+
   return (
     <div className="max-w-6xl mx-auto px-6 py-10">
       {/* Back Navigation */}
@@ -61,22 +100,24 @@ export default async function TopicPage({
       </Link>
 
       {/* Hero */}
-      <header className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-indigo-600 via-violet-600 to-fuchsia-600 text-white p-8 shadow-lg">
+      <header
+        className={`relative overflow-hidden rounded-2xl bg-gradient-to-br ${colors.header} p-8 shadow-lg`}
+      >
         <div className="absolute inset-0 opacity-40 [mask-image:radial-gradient(circle_at_30%_25%,white,transparent_70%)] bg-[url('/grid.svg')] bg-center bg-cover" />
         <div className="relative flex items-center gap-6">
-          <div className="w-20 h-20 rounded-xl bg-white/15 backdrop-blur flex items-center justify-center text-2xl font-bold transition-transform group-hover:rotate-3">
+          <div className="w-20 h-20 rounded-xl bg-black/5 backdrop-blur flex items-center justify-center text-2xl font-bold transition-transform group-hover:rotate-3 text-slate-900">
             {topic.title?.charAt(0) ?? 'T'}
           </div>
           <div>
-            <h1 className="text-3xl font-extrabold leading-tight bg-gradient-to-r from-white via-sky-100 to-indigo-200 bg-clip-text text-transparent">
+            <h1 className="text-3xl font-extrabold leading-tight text-slate-900">
               {topic.title}
             </h1>
-            <p className="mt-2 text-indigo-100/90 max-w-2xl text-sm md:text-base">
+            <p className="mt-2 text-slate-700 max-w-2xl text-sm md:text-base">
               {topic.description ??
                 'A curated set of modules and lessons to learn this topic.'}
             </p>
             <div className="mt-4 flex flex-wrap items-center gap-3">
-              <span className="inline-flex items-center gap-2 bg-white/10 px-3 py-1 rounded-full text-xs font-medium">
+              <span className="inline-flex items-center gap-2 bg-black/5 px-3 py-1 rounded-full text-xs font-medium text-slate-700">
                 <svg
                   className="w-4 h-4 opacity-90"
                   viewBox="0 0 24 24"
@@ -131,11 +172,15 @@ export default async function TopicPage({
               key={mod.id}
               className="group relative overflow-hidden bg-white rounded-2xl p-5 shadow-sm hover:shadow-lg transition flex flex-col justify-between border border-slate-100 hover:border-indigo-300/40"
             >
-              <div className="pointer-events-none absolute inset-0 opacity-0 group-hover:opacity-60 transition bg-gradient-to-br from-indigo-500/10 via-fuchsia-500/10 to-violet-500/10" />
+              <div
+                className={`pointer-events-none absolute inset-0 opacity-0 group-hover:opacity-60 transition bg-gradient-to-br ${colors.hover}`}
+              />
               <div>
                 <div className="flex items-start justify-between">
                   <div>
-                    <h3 className="text-lg font-semibold bg-gradient-to-r from-indigo-600 to-violet-600 bg-clip-text text-transparent">
+                    <h3
+                      className={`text-lg font-semibold bg-gradient-to-r ${colors.text} bg-clip-text text-transparent`}
+                    >
                       {mod.title}
                     </h3>
                     <p className="mt-1 text-sm text-slate-500">

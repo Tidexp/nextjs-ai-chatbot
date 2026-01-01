@@ -2294,76 +2294,6 @@ export function InstructorPanel({
                             </div>
                           </div>
                         </button>
-
-                        {/* Website URL Card */}
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setShowAddSourceModal(false);
-                            setShowUrlModal(true);
-                          }}
-                          className="group relative flex flex-col items-center justify-center p-8 rounded-2xl bg-gradient-to-br from-emerald-50/50 to-transparent border border-emerald-200/30 hover:border-emerald-300/60 hover:bg-emerald-50/80 transition-all duration-300 text-center gap-4 overflow-hidden"
-                        >
-                          <div className="absolute inset-0 bg-gradient-to-br from-emerald-500/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
-                          <div className="relative w-14 h-14 rounded-2xl bg-emerald-100/60 flex items-center justify-center group-hover:bg-emerald-200/80 transition-all duration-300 shadow-sm">
-                            <svg
-                              className="w-8 h-8 text-emerald-600"
-                              fill="none"
-                              stroke="currentColor"
-                              viewBox="0 0 24 24"
-                            >
-                              <path
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                                strokeWidth={2}
-                                d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9"
-                              />
-                            </svg>
-                          </div>
-                          <div className="relative">
-                            <div className="font-semibold mb-1">
-                              Website URL
-                            </div>
-                            <div className="text-xs text-muted-foreground">
-                              Paste a public URL
-                            </div>
-                          </div>
-                        </button>
-
-                        {/* Copy & Paste Card */}
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setShowAddSourceModal(false);
-                            setShowPasteModal(true);
-                          }}
-                          className="group relative flex flex-col items-center justify-center p-8 rounded-2xl bg-gradient-to-br from-amber-50/50 to-transparent border border-amber-200/30 hover:border-amber-300/60 hover:bg-amber-50/80 transition-all duration-300 text-center gap-4 overflow-hidden"
-                        >
-                          <div className="absolute inset-0 bg-gradient-to-br from-amber-500/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
-                          <div className="relative w-14 h-14 rounded-2xl bg-amber-100/60 flex items-center justify-center group-hover:bg-amber-200/80 transition-all duration-300 shadow-sm">
-                            <svg
-                              className="w-8 h-8 text-amber-600"
-                              fill="none"
-                              stroke="currentColor"
-                              viewBox="0 0 24 24"
-                            >
-                              <path
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                                strokeWidth={2}
-                                d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"
-                              />
-                            </svg>
-                          </div>
-                          <div className="relative">
-                            <div className="font-semibold mb-1">
-                              Copy & paste
-                            </div>
-                            <div className="text-xs text-muted-foreground">
-                              Paste text directly
-                            </div>
-                          </div>
-                        </button>
                       </div>
                     </div>
                   </div>
@@ -2832,7 +2762,7 @@ export function InstructorPanel({
                   <div>
                     <p className="text-sm font-medium">Number of questions</p>
                     <p className="text-xs text-muted-foreground">
-                      Between 3 and 12
+                      Between 5 and 50
                     </p>
                   </div>
                   <span className="text-sm font-semibold">
@@ -2841,8 +2771,8 @@ export function InstructorPanel({
                 </div>
                 <input
                   type="range"
-                  min={3}
-                  max={12}
+                  min={5}
+                  max={50}
                   value={quizNumQuestions}
                   onChange={(e) => setQuizNumQuestions(Number(e.target.value))}
                   className="w-full"

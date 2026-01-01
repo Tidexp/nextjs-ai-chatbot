@@ -2,6 +2,7 @@
 
 import type { User } from 'next-auth';
 import React from 'react';
+import Image from 'next/image';
 
 import { SidebarHistory } from '@/components/sidebar-history';
 import { SidebarUserNav } from '@/components/sidebar-user-nav';
@@ -56,14 +57,18 @@ export function AppSidebar({ user }: { user: User | undefined }) {
                             onClick={() => {
                               setOpenMobile(false);
                             }}
-                            className="flex items-center justify-center w-10 h-10 rounded-md bg-gradient-to-r from-indigo-600 to-violet-600 text-white font-bold text-lg hover:opacity-80 transition"
+                            className="flex items-center justify-center w-10 h-10 rounded-full bg-white hover:opacity-80 transition"
                           >
-                            CS
+                            <Image
+                              src="/adeptus-mechanicus-logo.svg"
+                              alt="Nexus"
+                              width={32}
+                              height={32}
+                              className="text-gray-800"
+                            />
                           </Link>
                         </TooltipTrigger>
-                        <TooltipContent side="right">
-                          ChatSkibidi
-                        </TooltipContent>
+                        <TooltipContent side="right">Nexus</TooltipContent>
                       </Tooltip>
                     ) : (
                       <Tooltip>
@@ -105,7 +110,7 @@ export function AppSidebar({ user }: { user: User | undefined }) {
                       className="flex flex-row gap-3 items-center"
                     >
                       <span className="text-lg font-semibold px-2 hover:bg-muted rounded-md cursor-pointer">
-                        ChatSkibidi
+                        Nexus
                       </span>
                     </Link>
                     <Tooltip>
@@ -155,7 +160,7 @@ export function AppSidebar({ user }: { user: User | undefined }) {
               <div className="flex flex-col items-center py-2">
                 <Tooltip>
                   <TooltipTrigger asChild>
-                    <div className="w-10 h-10 rounded-full bg-gradient-to-r from-indigo-600 to-violet-600 flex items-center justify-center text-white text-sm font-semibold cursor-pointer hover:opacity-80 transition">
+                    <div className="w-10 h-10 rounded-full bg-white dark:bg-black border-2 border-black dark:border-white flex items-center justify-center text-black dark:text-white text-sm font-semibold cursor-pointer hover:opacity-80 transition">
                       {user.email?.[0]?.toUpperCase() || 'U'}
                     </div>
                   </TooltipTrigger>

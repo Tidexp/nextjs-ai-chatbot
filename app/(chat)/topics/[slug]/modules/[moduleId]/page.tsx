@@ -6,6 +6,47 @@ import {
 } from '@/lib/db/queries';
 import { unstable_cache } from 'next/cache';
 
+// Color gradients matching the topic explorer
+const colorSchemes = [
+  {
+    header: 'from-rose-500/25 via-fuchsia-500/25 to-indigo-500/25',
+    text: 'from-rose-600 to-indigo-600',
+    hover: 'from-rose-500/10 via-fuchsia-500/10 to-indigo-500/10',
+    progress: 'from-rose-500 to-indigo-500',
+  },
+  {
+    header: 'from-sky-500/25 via-cyan-500/25 to-teal-500/25',
+    text: 'from-sky-600 to-teal-600',
+    hover: 'from-sky-500/10 via-cyan-500/10 to-teal-500/10',
+    progress: 'from-sky-500 to-teal-500',
+  },
+  {
+    header: 'from-emerald-500/25 via-lime-500/25 to-yellow-500/25',
+    text: 'from-emerald-600 to-yellow-600',
+    hover: 'from-emerald-500/10 via-lime-500/10 to-yellow-500/10',
+    progress: 'from-emerald-500 to-yellow-500',
+  },
+  {
+    header: 'from-orange-500/25 via-rose-500/25 to-pink-500/25',
+    text: 'from-orange-600 to-pink-600',
+    hover: 'from-orange-500/10 via-rose-500/10 to-pink-500/10',
+    progress: 'from-orange-500 to-pink-500',
+  },
+  {
+    header: 'from-indigo-500/25 via-purple-500/25 to-pink-500/25',
+    text: 'from-indigo-600 to-pink-600',
+    hover: 'from-indigo-500/10 via-purple-500/10 to-pink-500/10',
+    progress: 'from-indigo-500 to-pink-500',
+  },
+];
+
+function getColorScheme(topicId: string) {
+  const hash = topicId
+    .split('')
+    .reduce((acc, char) => acc + char.charCodeAt(0), 0);
+  return colorSchemes[hash % colorSchemes.length];
+}
+
 // Cache the modules and lessons data for 5 minutes
 const getCachedModulesAndLessons = unstable_cache(
   async (topicId: string) => {
@@ -27,6 +68,8 @@ export default async function ModulePage({
   const { slug, moduleId } = await params;
   const topic = await getTopicBySlug(slug);
   if (!topic) return notFound();
+
+  const colors = getColorScheme(topic.id);
 
   const modulesAndLessons = await getCachedModulesAndLessons(topic.id);
   const currentModule = modulesAndLessons.find((m) => m.id === moduleId);
@@ -67,9 +110,11 @@ export default async function ModulePage({
         {/* Main content */}
         <div className="lg:col-span-2">
           <div className="relative overflow-hidden rounded-2xl p-8 bg-white shadow-sm border border-slate-100">
-            <div className="pointer-events-none absolute inset-0 opacity-0 bg-gradient-to-br from-indigo-500/10 via-fuchsia-500/10 to-violet-500/10 [mask-image:radial-gradient(circle_at_25%_20%,white,transparent_70%)]" />
+            <div
+              className={`pointer-events-none absolute inset-0 opacity-60 bg-gradient-to-br ${colors.header} [mask-image:radial-gradient(circle_at_25%_20%,white,transparent_70%)]`}
+            />
             <div className="relative flex items-center justify-between">
-              <h1 className="text-2xl md:text-3xl font-bold bg-gradient-to-r from-indigo-600 via-violet-600 to-fuchsia-600 bg-clip-text text-transparent">
+              <h1 className="text-2xl md:text-3xl font-bold text-slate-900">
                 {currentModule.title}
               </h1>
               <div className="text-xs md:text-sm text-slate-600">
@@ -127,7 +172,9 @@ export default async function ModulePage({
                     className="group block"
                   >
                     <div className="relative flex items-center gap-4 p-4 rounded-xl border border-slate-200 bg-white/60 backdrop-blur-sm transition hover:border-indigo-300/60 hover:shadow-md">
-                      <div className="absolute inset-0 -z-10 opacity-0 group-hover:opacity-70 transition rounded-xl bg-gradient-to-r from-indigo-500/5 via-violet-500/5 to-fuchsia-500/5" />
+                      <div
+                        className={`absolute inset-0 -z-10 opacity-0 group-hover:opacity-70 transition rounded-xl bg-gradient-to-r ${colors.hover}`}
+                      />
                       <div className="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center text-sm font-medium text-slate-600 group-hover:bg-indigo-100 group-hover:text-indigo-600 transition">
                         {i + 1}
                       </div>
@@ -175,7 +222,7 @@ export default async function ModulePage({
               </div>
               <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
                 <div
-                  className="h-full bg-gradient-to-r from-indigo-500 to-fuchsia-500 rounded-full transition-all duration-500"
+                  className={`h-full bg-gradient-to-r ${colors.progress} rounded-full transition-all duration-500`}
                   style={{ width: `${progress}%` }}
                 />
               </div>

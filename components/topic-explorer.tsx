@@ -23,8 +23,12 @@ const gradients = [
   'from-indigo-500/25 via-purple-500/25 to-pink-500/25',
 ];
 
-function gradientFor(idx: number) {
-  return gradients[idx % gradients.length];
+function gradientFor(topicId: string) {
+  // Use topic ID for consistent colors across pages
+  const hash = topicId
+    .split('')
+    .reduce((acc, char) => acc + char.charCodeAt(0), 0);
+  return gradients[hash % gradients.length];
 }
 
 export const TopicExplorer: React.FC<TopicExplorerProps> = ({ topics }) => {
@@ -117,7 +121,7 @@ export const TopicExplorer: React.FC<TopicExplorerProps> = ({ topics }) => {
             <div
               className={merge(
                 'absolute inset-0 bg-gradient-to-br opacity-40 group-hover:opacity-60 transition',
-                gradientFor(idx),
+                gradientFor(t.id),
               )}
             />
             <div className="absolute inset-0 pointer-events-none [mask-image:radial-gradient(circle_at_30%_20%,white,transparent_70%)]" />
