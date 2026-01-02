@@ -14,7 +14,7 @@ const CODELLAMA_API_URL =
 // ----- Helper: Convert messages and extract system instruction (DEFINITIVELY FIXED) -----
 async function convertToGoogleFormat(
   messages: any,
-  limit: number = 10,
+  limit = 10,
 ): Promise<{ systemInstruction?: any; contents: any[] }> {
   let messageArray: any[] = [];
 
@@ -787,6 +787,12 @@ export const myProvider = customProvider({
       doGenerate: (opts: any) => callGemini('gemini-2.5-flash-lite', opts),
       doStream: (opts: any) => streamGemini('gemini-2.5-flash-lite', opts),
     } as any,
+    'gemini-2.0-flash-lite': {
+      specificationVersion: 'v2',
+      modelId: 'gemini-2.0-flash-lite',
+      doGenerate: (opts: any) => callGemini('gemini-2.0-flash-lite', opts),
+      doStream: (opts: any) => streamGemini('gemini-2.0-flash-lite', opts),
+    } as any,
     'gemma-3': {
       specificationVersion: 'v2',
       modelId: 'models/gemma-3-12b-it',
@@ -827,5 +833,6 @@ export type GeminiModelId =
   | 'gemini-2.5-pro'
   | 'gemini-2.5-flash'
   | 'gemini-2.5-flash-lite'
+  | 'gemini-2.0-flash-lite'
   | 'gemma-3'
   | 'codellama-7b-instruct';

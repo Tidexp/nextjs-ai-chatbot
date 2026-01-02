@@ -594,3 +594,125 @@ export async function getChunksByEntities(options: {
     relationCount: Number(row.relation_count),
   }));
 }
+
+export async function getRelatedEntitiesAcrossSources(options: {
+  sourceIds: string[];
+  entityLabels: string[];
+  maxHops?: number;
+}): Promise<string[]> {
+  const { sourceIds, entityLabels, maxHops = 1 } = options;
+
+  if (sourceIds.length === 0 || entityLabels.length === 0) {
+    return entityLabels;
+  }
+
+  const lowerLabels = entityLabels.map((label) => label.toLowerCase());
+
+  const results = await db.execute<{ label: string }>(sql`
+    WITH RECURSIVE entity_traversal AS (
+      -- Base case: original entities
+      SELECT DISTINCT e.id, e.label, e.canonical_label, 0 AS hop
+      FROM "GraphEntity" e
+      WHERE e.source_id = ANY(${sourceIds})
+        AND e.canonical_label = ANY(${lowerLabels})
+      
+      UNION
+      
+      -- Recursive case: entities connected through relationships
+      SELECT DISTINCT 
+        e2.id, 
+        e2.label, 
+        e2.canonical_label,
+        et.hop + 1
+      FROM entity_traversal et
+      JOIN "GraphRelation" r ON (
+        r.from_entity_id = et.id OR r.to_entity_id = et.id
+      )
+      JOIN "GraphEntity" e2 ON (
+        CASE 
+          WHEN r.from_entity_id = et.id THEN r.to_entity_id
+          ELSE r.from_entity_id
+        END = e2.id
+      )
+      WHERE et.hop < ${maxHops}
+        AND e2.source_id = ANY(${sourceIds})
+        -- Prioritize strong relationships
+        AND r.relation_type IN (
+          'uses', 'implements', 'extends', 'contains', 
+          'defines', 'prerequisite_of', 'relates_to'
+        )
+    )
+    SELECT DISTINCT label
+    FROM entity_traversal
+  `);
+
+  return (results as unknown as { rows: Array<{ label: string }> }).rows.map(
+    (row) => row.label,
+  );
+}
+
+/**
+ * Map generic/domain terms to specific technical entities for better expansion.
+ * Helps queries like "database" expand to PostgreSQL, MongoDB, SQLAlchemy, etc.
+ */
+function getSemanticExpansions(entityLabels: string[]): string[] {
+  const semanticMap: Record<string, string[]> = {
+    // Database domain
+    database: [
+      'PostgreSQL',
+      'MySQL',
+      'MongoDB',
+      'Redis',
+      'API',
+      'ORM',
+      'Drizzle',
+    ],
+    sql: ['PostgreSQL', 'MySQL', 'Drizzle', 'SQLAlchemy', 'Prisma'],
+    nosql: ['MongoDB', 'Redis', 'Cassandra', 'mongoose', 'pymongo'],
+
+    // Backend domain
+    backend: ['Express', 'FastAPI', 'Node.js', 'Python', 'API', 'PostgreSQL'],
+    application: ['React', 'Next.js', 'Express', 'API', 'database'],
+
+    // Framework domain
+    framework: [
+      'React',
+      'Vue',
+      'Angular',
+      'Next.js',
+      'Express',
+      'Django',
+      'Flask',
+    ],
+  };
+
+  const expanded: Set<string> = new Set(entityLabels);
+
+  for (const label of entityLabels) {
+    const lowerLabel = label.toLowerCase();
+    const semanticTerms = semanticMap[lowerLabel] || [];
+    semanticTerms.forEach((term) => expanded.add(term));
+  }
+
+  return Array.from(expanded);
+}
+
+export async function expandEntitiesWithSemantics(options: {
+  sourceIds: string[];
+  entityLabels: string[];
+  maxHops?: number;
+}): Promise<string[]> {
+  const { sourceIds, entityLabels, maxHops = 1 } = options;
+
+  // Step 1: Add semantic expansions
+  const semanticExpanded = getSemanticExpansions(entityLabels);
+
+  // Step 2: Add graph-based expansions
+  const graphExpanded = await getRelatedEntitiesAcrossSources({
+    sourceIds,
+    entityLabels: semanticExpanded,
+    maxHops,
+  });
+
+  return graphExpanded;
+}

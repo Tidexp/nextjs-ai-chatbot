@@ -28,7 +28,12 @@ import {
   findRelevantChunks,
   formatContextForLLM,
 } from '@/lib/rag/embeddings';
-import { getChunksFromSources, getChunksByEntities } from '@/lib/rag/db';
+import {
+  getChunksFromSources,
+  getChunksByEntities,
+  getRelatedEntitiesAcrossSources,
+  expandEntitiesWithSemantics,
+} from '@/lib/rag/db';
 import { extractEntities } from '@/lib/rag/graph';
 import { auth } from '@/app/(auth)/auth';
 
@@ -46,6 +51,18 @@ export async function POST(request: NextRequest) {
       topK = 3,
       similarityThreshold = 0.5,
     } = await request.json();
+
+    let adjustedTopK = topK;
+    if (
+      query.toLowerCase().includes('difference') ||
+      query.toLowerCase().includes('compare') ||
+      query.toLowerCase().includes('versus')
+    ) {
+      adjustedTopK = 5; // Get more chunks for comparison queries
+      console.log(
+        `[RAG Search] Comparison query detected, increasing topK to ${adjustedTopK}`,
+      );
+    }
 
     if (!query || !sourceIds || !Array.isArray(sourceIds)) {
       return NextResponse.json(
@@ -98,7 +115,7 @@ export async function POST(request: NextRequest) {
         embedding: chunk.embedding,
         index: chunk.index,
       })),
-      topK,
+      adjustedTopK,
       similarityThreshold,
     );
 
@@ -106,7 +123,7 @@ export async function POST(request: NextRequest) {
       `[RAG Search] Vector search: ${relevantChunks.length} relevant chunks`,
     );
 
-    // 3b. Graph RAG: Extract entities from query and find related chunks
+    // 3b. Graph RAG: Expand entities and find related chunks across sources
     let graphChunks: Array<{
       content: string;
       matchedEntities: string[];
@@ -118,9 +135,22 @@ export async function POST(request: NextRequest) {
         console.log(
           `[RAG Search] Query entities: ${queryEntities.map((e) => e.label).join(', ')}`,
         );
-        const entityResults = await getChunksByEntities({
+
+        // EXPANSION: Get related entities through graph relationships
+        const expandedEntities = await expandEntitiesWithSemantics({
           sourceIds,
           entityLabels: queryEntities.map((e) => e.label),
+          maxHops: 1, // 1-hop expansion for cross-source discovery
+        });
+
+        console.log(
+          `[RAG Search] Expanded to ${expandedEntities.length} entities (from ${queryEntities.length})`,
+        );
+
+        const entityResults = await getChunksByEntities({
+          sourceIds,
+          entityLabels: expandedEntities,
+          enableTwoHop: false, // Already expanded, no need for 2-hop
         });
         graphChunks = entityResults;
         console.log(
@@ -167,7 +197,7 @@ export async function POST(request: NextRequest) {
     const hybridChunks = Array.from(mergedContent.values())
       .map((chunk) => ({
         ...chunk,
-        hybridScore: chunk.vectorScore + chunk.graphScore * 0.3,
+        hybridScore: chunk.vectorScore + chunk.graphScore * 0.5,
       }))
       .sort((a, b) => b.hybridScore - a.hybridScore)
       .slice(0, topK);

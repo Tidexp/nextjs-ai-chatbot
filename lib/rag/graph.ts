@@ -12,7 +12,7 @@ const hf = new HfInference(process.env.HUGGINGFACE_API_KEY);
 const NER_MODEL = 'dslim/bert-base-NER';
 
 function sanitize(text: string): string {
-  return text.replace(/\s+/g, ' ').trim().slice(0, 2000) || 'placeholder';
+  return text.replace(/\s+/g, ' ').trim() || 'placeholder';
 }
 
 function mapEntityType(raw: string): string {
@@ -22,6 +22,43 @@ function mapEntityType(raw: string): string {
   if (upper === 'LOC' || upper === 'LOCATION') return 'location';
   if (upper === 'MISC') return 'misc';
   return 'entity';
+}
+
+function isValidEntity(label: string): boolean {
+  // Filter out garbage entities
+  if (!label || label.length < 2) return false;
+
+  // FIX 1: Reject single letter followed by word (e.g., "E Python", "F Fast")
+  if (/^\b[A-Z]\s+[A-Z][a-z]+/.test(label)) return false;
+
+  // FIX 2: Check if same word appears at start and end (e.g., "Python ... Python")
+  const words = label.split(/\s+/).filter(Boolean);
+  if (
+    words.length > 2 &&
+    words[0].toLowerCase() === words[words.length - 1].toLowerCase()
+  ) {
+    return false;
+  }
+
+  // FIX 3: Reject pattern like "E Python Framework D" (single letters at boundaries)
+  if (/^\b[A-Z]\s+[A-Z]\w+.*[A-Z]\s*$/.test(label)) return false;
+
+  // Reject highly repetitive patterns (e.g., "Python Python Python")
+  if (/(\b\w+\b)(?:\s+\1){2,}/i.test(label)) return false;
+
+  // Reject corrupted text patterns
+  if (/TypeE\s*r|ValueError.*Index/i.test(label)) return false;
+
+  // Reject if too many capital letters (likely corrupted)
+  const capitals = (label.match(/[A-Z]/g) || []).length;
+  if (capitals > label.length * 0.6 && label.length > 5) return false;
+
+  // Reject generic names without context
+  const genericNames = ['john', 'data', 'value', 'item', 'test'];
+  if (genericNames.includes(label.toLowerCase()) && label.length < 6)
+    return false;
+
+  return true;
 }
 
 function mergeTokens(classifications: any[]): GraphEntityInput[] {
@@ -37,17 +74,21 @@ function mergeTokens(classifications: any[]): GraphEntityInput[] {
     if (current && current.type === mappedType) {
       current.label = `${current.label} ${word}`.trim();
     } else {
-      if (current) merged.push(current);
+      if (current && isValidEntity(current.label)) {
+        merged.push(current);
+      }
       current = { label: word.trim(), type: mappedType };
     }
   }
 
-  if (current) merged.push(current);
+  if (current && isValidEntity(current.label)) {
+    merged.push(current);
+  }
 
   const unique = Array.from(
     new Map(
       merged
-        .filter((entry) => entry.label)
+        .filter((entry) => entry.label && isValidEntity(entry.label))
         .map((entry) => [
           `${entry.label.toLowerCase()}|${entry.type}`,
           { label: entry.label, type: entry.type },
@@ -62,20 +103,113 @@ function mergeTokens(classifications: any[]): GraphEntityInput[] {
   }));
 }
 
+function extractTechnicalTerms(text: string): GraphEntityInput[] {
+  const terms: GraphEntityInput[] = [];
+
+  // Programming languages
+  const languages =
+    text.match(
+      /\b(Python|JavaScript|TypeScript|Java|Ruby|Go|Rust|C\+\+|PHP|Swift|Kotlin)\b/gi,
+    ) || [];
+  languages.forEach((lang) => {
+    terms.push({
+      label: lang,
+      type: 'entity',
+      canonicalLabel: lang.toLowerCase(),
+    });
+  });
+
+  // Frameworks (case-sensitive patterns)
+  const frameworks =
+    text.match(
+      /\b(Django|Flask|FastAPI|React|Vue|Angular|Next\.js|Express|Nest\.js|Spring|Laravel|Rails)\b/g,
+    ) || [];
+  frameworks.forEach((fw) => {
+    terms.push({ label: fw, type: 'entity', canonicalLabel: fw.toLowerCase() });
+  });
+
+  // Libraries
+  const libraries =
+    text.match(
+      /\b(pandas|NumPy|TensorFlow|PyTorch|scikit-learn|Keras|matplotlib|requests|jQuery|Lodash|Axios)\b/g,
+    ) || [];
+  libraries.forEach((lib) => {
+    terms.push({
+      label: lib,
+      type: 'entity',
+      canonicalLabel: lib.toLowerCase(),
+    });
+  });
+
+  // Tools
+  const tools =
+    text.match(
+      /\b(pip|npm|yarn|pnpm|Git|Docker|Kubernetes|Jenkins|webpack|Vite|Babel|ESLint)\b/g,
+    ) || [];
+  tools.forEach((tool) => {
+    terms.push({
+      label: tool,
+      type: 'entity',
+      canonicalLabel: tool.toLowerCase(),
+    });
+  });
+
+  // Databases
+  const databases =
+    text.match(
+      /\b(PostgreSQL|MySQL|MongoDB|Redis|Cassandra|Neo4j|SQLite|Oracle|SQL Server)\b/g,
+    ) || [];
+  databases.forEach((db) => {
+    terms.push({ label: db, type: 'entity', canonicalLabel: db.toLowerCase() });
+  });
+
+  // Remove duplicates
+  const uniqueMap = new Map<string, GraphEntityInput>();
+  terms.forEach((term) => {
+    if (term.canonicalLabel && !uniqueMap.has(term.canonicalLabel)) {
+      uniqueMap.set(term.canonicalLabel, term);
+    }
+  });
+
+  return Array.from(uniqueMap.values());
+}
+
 function fallbackHeuristic(text: string): GraphEntityInput[] {
+  // First, try to extract known technical terms
+  const technicalTerms = extractTechnicalTerms(text);
+
+  // Then add capitalized words as fallback
   const matches = text.match(/\b[A-Z][a-zA-Z]{2,}\b/g) || [];
-  const unique = Array.from(new Set(matches)).slice(0, 10);
-  return unique.map((label) => ({
+  const unique = Array.from(new Set(matches))
+    .filter(isValidEntity)
+    .slice(0, 10);
+
+  const capitalizedEntities = unique.map((label) => ({
     label,
     type: 'entity',
     canonicalLabel: label.toLowerCase(),
   }));
+
+  // Merge technical terms with capitalized words, prioritize technical terms
+  const combined = [...technicalTerms, ...capitalizedEntities];
+  const uniqueMap = new Map<string, GraphEntityInput>();
+  combined.forEach((entity) => {
+    if (entity.canonicalLabel && !uniqueMap.has(entity.canonicalLabel)) {
+      uniqueMap.set(entity.canonicalLabel, entity);
+    }
+  });
+
+  return Array.from(uniqueMap.values());
 }
 
 export async function extractEntities(
   text: string,
 ): Promise<GraphEntityInput[]> {
   const cleaned = sanitize(text);
+
+  // Always extract technical terms first
+  const technicalTerms = extractTechnicalTerms(cleaned);
+
   try {
     const result = await hf.tokenClassification({
       model: NER_MODEL,
@@ -83,13 +217,33 @@ export async function extractEntities(
     });
 
     if (!Array.isArray(result) || result.length === 0) {
-      return fallbackHeuristic(cleaned);
+      return technicalTerms.length > 0
+        ? technicalTerms
+        : fallbackHeuristic(cleaned);
     }
 
-    return mergeTokens(result as any[]);
+    const nerEntities = mergeTokens(result as any[]);
+
+    // Merge NER results with technical terms, remove duplicates
+    const combined = [...technicalTerms, ...nerEntities];
+    const uniqueMap = new Map<string, GraphEntityInput>();
+
+    combined.forEach((entity) => {
+      if (
+        isValidEntity(entity.label) &&
+        entity.canonicalLabel &&
+        !uniqueMap.has(entity.canonicalLabel)
+      ) {
+        uniqueMap.set(entity.canonicalLabel, entity);
+      }
+    });
+
+    return Array.from(uniqueMap.values());
   } catch (error) {
     console.warn('NER extraction failed, using fallback:', error);
-    return fallbackHeuristic(cleaned);
+    return technicalTerms.length > 0
+      ? technicalTerms
+      : fallbackHeuristic(cleaned);
   }
 }
 
@@ -135,7 +289,7 @@ Extract 3-10 meaningful relationships. Use specific relationship types from the 
 Only output the JSON array, nothing else.`;
 
     const result = await generateText({
-      model: myProvider.languageModel('gemini-2.5-flash'),
+      model: myProvider.languageModel('gemini-2.0-flash-lite'),
       prompt,
       temperature: 0.3,
     });
