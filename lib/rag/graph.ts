@@ -28,6 +28,10 @@ function isValidEntity(label: string): boolean {
   // Filter out garbage entities
   if (!label || label.length < 2) return false;
 
+  // Reject entities longer than 5 words (likely garbage concatenation)
+  const wordCount = label.split(/\s+/).filter(Boolean).length;
+  if (wordCount > 5) return false;
+
   // FIX 1: Reject single letter followed by word (e.g., "E Python", "F Fast")
   if (/^\b[A-Z]\s+[A-Z][a-z]+/.test(label)) return false;
 
@@ -64,6 +68,7 @@ function isValidEntity(label: string): boolean {
 function mergeTokens(classifications: any[]): GraphEntityInput[] {
   const merged: Array<{ label: string; type: string }> = [];
   let current: { label: string; type: string } | null = null;
+  const MAX_ENTITY_WORDS = 3; // Reduced to 3 words to avoid garbage
 
   for (const item of classifications) {
     const group = (item.entity_group || item.entity || '').toString();
@@ -71,13 +76,29 @@ function mergeTokens(classifications: any[]): GraphEntityInput[] {
     if (!group || !word.trim()) continue;
 
     const mappedType = mapEntityType(group);
-    if (current && current.type === mappedType) {
+
+    // Force split on punctuation or conjunctions (these are entity boundaries)
+    const isBreakPoint = /^[,;\.]$/.test(word) || /^(and|or|&)$/i.test(word);
+
+    // Check if we should continue merging or start a new entity
+    const shouldMerge =
+      current &&
+      current.type === mappedType &&
+      current.label.split(/\s+/).length < MAX_ENTITY_WORDS &&
+      !isBreakPoint;
+
+    if (shouldMerge && current) {
       current.label = `${current.label} ${word}`.trim();
     } else {
       if (current && isValidEntity(current.label)) {
         merged.push(current);
       }
-      current = { label: word.trim(), type: mappedType };
+      // Skip the break point itself, don't start a new entity with it
+      if (!isBreakPoint) {
+        current = { label: word.trim(), type: mappedType };
+      } else {
+        current = null;
+      }
     }
   }
 
@@ -85,9 +106,26 @@ function mergeTokens(classifications: any[]): GraphEntityInput[] {
     merged.push(current);
   }
 
+  // Split any remaining concatenated entities (e.g., "Facebook Google" -> ["Facebook", "Google"])
+  const split: Array<{ label: string; type: string }> = [];
+  for (const entry of merged) {
+    const words = entry.label.split(/\s+/);
+    // If we have multiple capitalized words, they might be separate entities
+    if (words.length === 2 && words.every((w) => /^[A-Z][a-z]+/.test(w))) {
+      // Split into individual entities
+      words.forEach((w) => {
+        if (isValidEntity(w)) {
+          split.push({ label: w, type: entry.type });
+        }
+      });
+    } else {
+      split.push(entry);
+    }
+  }
+
   const unique = Array.from(
     new Map(
-      merged
+      split
         .filter((entry) => entry.label && isValidEntity(entry.label))
         .map((entry) => [
           `${entry.label.toLowerCase()}|${entry.type}`,
@@ -209,6 +247,9 @@ export async function extractEntities(
 
   // Always extract technical terms first
   const technicalTerms = extractTechnicalTerms(cleaned);
+  console.log(
+    `[Entity Extraction] Query: "${text}" → Cleaned: "${cleaned}" → Technical terms found: ${technicalTerms.length} (${technicalTerms.map((t) => t.label).join(', ')})`,
+  );
 
   try {
     const result = await hf.tokenClassification({
@@ -217,6 +258,9 @@ export async function extractEntities(
     });
 
     if (!Array.isArray(result) || result.length === 0) {
+      console.log(
+        `[Entity Extraction] NER returned empty, using fallback. Technical terms: ${technicalTerms.length}`,
+      );
       return technicalTerms.length > 0
         ? technicalTerms
         : fallbackHeuristic(cleaned);
@@ -235,10 +279,18 @@ export async function extractEntities(
         !uniqueMap.has(entity.canonicalLabel)
       ) {
         uniqueMap.set(entity.canonicalLabel, entity);
+      } else if (!isValidEntity(entity.label)) {
+        console.log(
+          `[Entity Extraction] Filtered out invalid entity: "${entity.label}"`,
+        );
       }
     });
 
-    return Array.from(uniqueMap.values());
+    const final = Array.from(uniqueMap.values());
+    console.log(
+      `[Entity Extraction] Final entities: ${final.length} (${final.map((e) => e.label).join(', ')})`,
+    );
+    return final;
   } catch (error) {
     console.warn('NER extraction failed, using fallback:', error);
     return technicalTerms.length > 0
@@ -259,11 +311,13 @@ export async function extractTriplets(
 
 RELATIONSHIP TYPES (use these exact values):
 Programming Domain:
+- built_on: subject is built on/based on object platform (e.g., "Next.js built_on React", "TypeScript built_on JavaScript")
+- created_by: subject was created/developed/made by object (e.g., "React created_by Facebook", "Next.js created_by Vercel")
 - defines: subject defines/declares object (e.g., "Python defines classes")
 - implements: subject implements object (e.g., "React implements virtual DOM")
 - extends: subject extends/inherits from object (e.g., "TypeScript extends JavaScript")
 - imports: subject imports/uses object (e.g., "App imports React")
-- uses: subject uses object as a tool (e.g., "Function uses API")
+- uses: subject uses object as a tool (e.g., "Function uses API", "React uses JavaScript")
 - contains: subject contains object as a part (e.g., "Component contains Props")
 - references: subject references/mentions object
 
@@ -276,6 +330,12 @@ General:
 - relates_to: general semantic relationship
 - co_occurs: entities that appear together without clear direction
 
+IMPORTANT PATTERNS TO RECOGNIZE:
+- "X is built by Y" → {"subject": "X", "predicate": "created_by", "object": "Y"}
+- "X is a Y framework" → {"subject": "X", "predicate": "built_on", "object": "Y"}
+- "X framework for Y" → {"subject": "X", "predicate": "built_on", "object": "Y"}
+- "X developed by Y" → {"subject": "X", "predicate": "created_by", "object": "Y"}
+
 TEXT:
 ${text.slice(0, 1500)}
 
@@ -285,7 +345,7 @@ OUTPUT FORMAT (JSON array):
   {"subject": "Entity3", "predicate": "prerequisite_of", "object": "Entity4"}
 ]
 
-Extract 3-10 meaningful relationships. Use specific relationship types from the list above.
+Extract 5-15 meaningful relationships. Prioritize built_on, created_by, and uses relationships.
 Only output the JSON array, nothing else.`;
 
     const result = await generateText({

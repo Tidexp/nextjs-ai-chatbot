@@ -137,6 +137,9 @@ function getSemanticWeight(relationType: string): number {
     implements: 0.9, // Implementation of interfaces/contracts
     extends: 0.85, // Inheritance relationships
     imports: 0.8, // File/module dependencies
+    built_on: 0.82, // Platform or framework foundation (e.g., Next.js built on React)
+    created_by: 0.8, // Explicit authorship/source
+    uses: 0.78, // Strong usage/depends-on link
 
     // --- Domain: Pedagogy (Educational Logic) ---
     prerequisite_of: 0.9, // Prerequisites are critical for learning paths
@@ -146,11 +149,64 @@ function getSemanticWeight(relationType: string): number {
     // --- General ---
     contains: 0.7,
     references: 0.6,
-    uses: 0.75,
     relates_to: 0.3,
     co_occurs: 0.2, // Weakest - just co-occurrence
   };
   return weights[relationType] || 0.3;
+}
+
+// Normalize open-vocabulary predicates into a small canonical set.
+function normalizePredicate(triplet: DirectedTriplet): string | null {
+  const allowlist = new Set<DirectedTriplet['predicate']>([
+    'uses',
+    'built_on',
+    'created_by',
+    'implements',
+    'defines',
+    'contains',
+    'relates_to',
+    'imports',
+    'extends',
+    'references',
+    'prerequisite_of',
+    'explains',
+    'follows',
+    'co_occurs',
+  ]);
+
+  const raw = triplet.predicate.toLowerCase().trim().replace(/\s+/g, '_');
+  const subject = triplet.subject.toLowerCase();
+  const object = triplet.object.toLowerCase();
+
+  // Heuristic remaps for common verbs
+  const synonymMap: Record<string, DirectedTriplet['predicate']> = {
+    manages: 'uses',
+    handles: 'uses',
+    integrates: 'uses',
+    integrates_with: 'uses',
+    relies_on: 'built_on',
+    built_with: 'built_on',
+    based_on: 'built_on',
+    references: 'references',
+  };
+
+  let predicate = synonymMap[raw] ?? raw;
+
+  // Framework-specific overrides for React / Next.js
+  if (subject.includes('next.js') && object === 'react') {
+    predicate = 'built_on';
+  }
+  if (subject.includes('nextjs') && object === 'react') {
+    predicate = 'built_on';
+  }
+  if (subject.includes('next.js') && object === 'vercel') {
+    predicate = 'created_by';
+  }
+
+  if (!allowlist.has(predicate)) {
+    return null;
+  }
+  return predicate;
 }
 
 /**
@@ -332,6 +388,11 @@ export async function storeGraphEntitiesAndRelations(options: {
   }> = [];
 
   for (const triplet of triplets) {
+    const normalizedPredicate = normalizePredicate(triplet);
+    if (!normalizedPredicate) {
+      continue; // Drop predicates outside allowlist
+    }
+
     const subjectId = findEntityId(triplet.subject);
     const objectId = findEntityId(triplet.object);
 
@@ -343,7 +404,7 @@ export async function storeGraphEntitiesAndRelations(options: {
     }
 
     // Calculate baseWeight WITHOUT temporal decay (store for read-time calculation)
-    const semanticWeight = getSemanticWeight(triplet.predicate);
+    const semanticWeight = getSemanticWeight(normalizedPredicate);
     const sourceReliability = getSourceReliability(sourceMetadata);
     const versioningBoost = getVersioningBoost(version, isLatestVersion);
 
@@ -358,8 +419,104 @@ export async function storeGraphEntitiesAndRelations(options: {
       sourceId,
       fromEntityId: subjectId,
       toEntityId: objectId,
-      relationType: triplet.predicate,
+      relationType: normalizedPredicate,
       evidenceChunkId: chunkId || null,
+      weight: baseWeight,
+    });
+  }
+
+  // Force critical canonical edges for React/Next.js if present.
+  // Injects missing entities if needed.
+  async function addForcedEdge(
+    subjectLabel: string,
+    predicate: string,
+    objectLabel: string,
+    weightOverride?: number,
+  ) {
+    let sId = findEntityId(subjectLabel);
+    let oId = findEntityId(objectLabel);
+
+    // Inject missing entities
+    const missingEntities: Array<{
+      label: string;
+      type: string;
+      canonicalLabel: string;
+    }> = [];
+
+    if (!sId) {
+      missingEntities.push({
+        label: subjectLabel,
+        type: 'entity',
+        canonicalLabel: subjectLabel.toLowerCase(),
+      });
+    }
+
+    if (!oId) {
+      missingEntities.push({
+        label: objectLabel,
+        type: 'entity',
+        canonicalLabel: objectLabel.toLowerCase(),
+      });
+    }
+
+    if (missingEntities.length > 0) {
+      const injectedRows = missingEntities.map((entity) => ({
+        sourceId,
+        chunkId: chunkId || null,
+        label: entity.label,
+        type: entity.type,
+        canonicalLabel: entity.canonicalLabel,
+        metadata: null,
+      }));
+
+      await db.insert(graphEntity).values(injectedRows).onConflictDoNothing();
+
+      // Re-fetch to get IDs
+      const newLabels = missingEntities.map((e) => e.label);
+      const newEntities = await db
+        .select()
+        .from(graphEntity)
+        .where(
+          and(
+            eq(graphEntity.sourceId, sourceId),
+            inArray(graphEntity.label, newLabels),
+          ),
+        );
+
+      for (const entity of newEntities) {
+        const label = (entity as any).label;
+        const id = (entity as any).id;
+        entityMap.set(label, id);
+        canonicalMap.set(label.toLowerCase().trim(), id);
+      }
+
+      // Now try finding again
+      sId = findEntityId(subjectLabel);
+      oId = findEntityId(objectLabel);
+    }
+
+    if (!sId || !oId || sId === oId) return;
+
+    const alreadyQueued = relationRows.some(
+      (r) =>
+        r.fromEntityId === sId &&
+        r.toEntityId === oId &&
+        r.relationType === predicate,
+    );
+    if (alreadyQueued) return;
+
+    const semanticWeight = getSemanticWeight(predicate);
+    const sourceReliability = getSourceReliability(sourceMetadata);
+    const versioningBoost = getVersioningBoost(version, isLatestVersion);
+    const baseWeight =
+      weightOverride ?? semanticWeight * sourceReliability * versioningBoost;
+
+    relationRows.push({
+      sourceId,
+      fromEntityId: sId,
+      toEntityId: oId,
+      relationType: predicate,
+      evidenceChunkId: null,
       weight: baseWeight,
     });
   }
@@ -447,30 +604,39 @@ export async function getChunksByEntities(options: {
     WITH 
     -- Step 1: Match entities from query
     matched_entities AS (
-      SELECT id, label, chunk_id, source_id
+      SELECT id, label, "chunkId", "sourceId"
       FROM "GraphEntity"
-      WHERE source_id = ANY(${sourceIds})
-        AND canonical_label = ANY(${lowerLabels})
+      WHERE "sourceId" = ANY(ARRAY[${sql.join(
+        sourceIds.map((id) => sql`${id}::uuid`),
+        sql`, `,
+      )}])
+        AND "canonicalLabel" = ANY(ARRAY[${sql.join(
+          lowerLabels.map((l) => sql`${l}`),
+          sql`, `,
+        )}])
     ),
     
     -- Step 2: BIDIRECTIONAL relations (both directions)
     bidirectional_relations AS (
       SELECT 
         r.id,
-        r.from_entity_id,
-        r.to_entity_id,
-        r.relation_type,
+        r."fromEntityId",
+        r."toEntityId",
+        r."relationType",
         r.weight,
-        r.created_at,
+        r."createdAt",
         CASE 
-          WHEN r.from_entity_id IN (SELECT id FROM matched_entities) THEN r.to_entity_id
-          ELSE r.from_entity_id
+          WHEN r."fromEntityId" IN (SELECT id FROM matched_entities) THEN r."toEntityId"
+          ELSE r."fromEntityId"
         END AS related_entity_id
       FROM "GraphRelation" r
-      WHERE r.source_id = ANY(${sourceIds})
+      WHERE r."sourceId" = ANY(ARRAY[${sql.join(
+        sourceIds.map((id) => sql`${id}::uuid`),
+        sql`, `,
+      )}])
         AND (
-          r.from_entity_id IN (SELECT id FROM matched_entities)
-          OR r.to_entity_id IN (SELECT id FROM matched_entities)
+          r."fromEntityId" IN (SELECT id FROM matched_entities)
+          OR r."toEntityId" IN (SELECT id FROM matched_entities)
         )
     ),
     
@@ -481,22 +647,25 @@ export async function getChunksByEntities(options: {
           ? sql`
       SELECT 
         r2.id,
-        r2.from_entity_id,
-        r2.to_entity_id,
-        r2.relation_type,
+        r2."fromEntityId",
+        r2."toEntityId",
+        r2."relationType",
         r2.weight * 0.5 AS weight,  -- Decay weight for 2-hop
-        r2.created_at,
+        r2."createdAt",
         CASE 
-          WHEN r2.from_entity_id IN (SELECT related_entity_id FROM bidirectional_relations) THEN r2.to_entity_id
-          ELSE r2.from_entity_id
+          WHEN r2."fromEntityId" IN (SELECT related_entity_id FROM bidirectional_relations) THEN r2."toEntityId"
+          ELSE r2."fromEntityId"
         END AS related_entity_id
       FROM "GraphRelation" r2
-      WHERE r2.source_id = ANY(${sourceIds})
+      WHERE r2."sourceId" = ANY(ARRAY[${sql.join(
+        sourceIds.map((id) => sql`${id}::uuid`),
+        sql`, `,
+      )}])
         AND (
-          r2.from_entity_id IN (SELECT related_entity_id FROM bidirectional_relations)
-          OR r2.to_entity_id IN (SELECT related_entity_id FROM bidirectional_relations)
+          r2."fromEntityId" IN (SELECT related_entity_id FROM bidirectional_relations)
+          OR r2."toEntityId" IN (SELECT related_entity_id FROM bidirectional_relations)
         )
-        AND r2.relation_type IN ('contains', 'defines', 'extends')  -- Parent relationships only
+        AND r2."relationType" IN ('contains', 'defines', 'extends')  -- Parent relationships only
       `
           : sql`SELECT NULL AS id LIMIT 0`
       }
@@ -510,7 +679,7 @@ export async function getChunksByEntities(options: {
     
     -- Step 5: Collect related entities
     related_entities AS (
-      SELECT DISTINCT e.id, e.label, e.chunk_id
+      SELECT DISTINCT e.id, e.label, e."chunkId"
       FROM "GraphEntity" e
       WHERE e.id IN (SELECT related_entity_id FROM all_relations)
     ),
@@ -518,13 +687,13 @@ export async function getChunksByEntities(options: {
     -- Step 6: Aggregate entities per chunk
     chunk_entities AS (
       SELECT 
-        COALESCE(me.chunk_id, re.chunk_id) AS chunk_id,
+        COALESCE(me."chunkId", re."chunkId") AS chunk_id,
         ARRAY_AGG(DISTINCT me.label) FILTER (WHERE me.label IS NOT NULL) AS matched_labels,
         ARRAY_AGG(DISTINCT re.label) FILTER (WHERE re.label IS NOT NULL) AS related_labels
       FROM matched_entities me
-      FULL OUTER JOIN related_entities re ON me.chunk_id = re.chunk_id
-      WHERE COALESCE(me.chunk_id, re.chunk_id) IS NOT NULL
-      GROUP BY COALESCE(me.chunk_id, re.chunk_id)
+      FULL OUTER JOIN related_entities re ON me."chunkId" = re."chunkId"
+      WHERE COALESCE(me."chunkId", re."chunkId") IS NOT NULL
+      GROUP BY COALESCE(me."chunkId", re."chunkId")
     ),
     
     -- Step 7: Calculate dynamic graph score with temporal decay & density normalization
@@ -536,17 +705,17 @@ export async function getChunksByEntities(options: {
         COUNT(r.id) AS relation_count,
         -- Weighted average with temporal decay (with minimum decay factor of 0.3)
         AVG(
-          r.weight * GREATEST(0.3, EXP(-${temporalDecayRate} * 
-            GREATEST(0, EXTRACT(EPOCH FROM (NOW() - r.created_at)) / 86400)
+          r.weight * GREATEST(0.3, EXP(${-temporalDecayRate} * 
+            GREATEST(0, EXTRACT(EPOCH FROM AGE(NOW(), r."createdAt")) / 86400)
           ))
         ) AS avg_decayed_weight
       FROM chunk_entities ce
       LEFT JOIN all_relations r 
-        ON (r.from_entity_id IN (
-              SELECT e.id FROM "GraphEntity" e WHERE e.chunk_id = ce.chunk_id
+        ON (r."fromEntityId" IN (
+              SELECT e.id FROM "GraphEntity" e WHERE e."chunkId" = ce.chunk_id
             )
-            OR r.to_entity_id IN (
-              SELECT e.id FROM "GraphEntity" e WHERE e.chunk_id = ce.chunk_id
+            OR r."toEntityId" IN (
+              SELECT e.id FROM "GraphEntity" e WHERE e."chunkId" = ce.chunk_id
             ))
       GROUP BY ce.chunk_id, ce.matched_labels, ce.related_labels
     )
@@ -566,22 +735,19 @@ export async function getChunksByEntities(options: {
       COALESCE(cs.relation_count, 0)::integer AS relation_count
     FROM "DocumentChunk" c
     INNER JOIN chunk_scores cs ON c.id = cs.chunk_id
-    WHERE c.source_id = ANY(${sourceIds})
+    WHERE c."sourceId" = ANY(ARRAY[${sql.join(
+      sourceIds.map((id) => sql`${id}::uuid`),
+      sql`, `,
+    )}])
     ORDER BY graph_score DESC
   `);
 
-  return (
-    results as unknown as {
-      rows: Array<{
-        chunk_id: string;
-        content: string;
-        matched_entities: string;
-        related_entities: string;
-        graph_score: number;
-        relation_count: number;
-      }>;
-    }
-  ).rows.map((row) => ({
+  if (!results || !Array.isArray(results)) {
+    console.error('[getChunksByEntities] Invalid results:', results);
+    return [];
+  }
+
+  return results.map((row) => ({
     chunkId: row.chunk_id,
     content: row.content,
     matchedEntities: row.matched_entities
@@ -611,10 +777,16 @@ export async function getRelatedEntitiesAcrossSources(options: {
   const results = await db.execute<{ label: string }>(sql`
     WITH RECURSIVE entity_traversal AS (
       -- Base case: original entities
-      SELECT DISTINCT e.id, e.label, e.canonical_label, 0 AS hop
+      SELECT DISTINCT e.id, e.label, e."canonicalLabel", 0 AS hop
       FROM "GraphEntity" e
-      WHERE e.source_id = ANY(${sourceIds})
-        AND e.canonical_label = ANY(${lowerLabels})
+      WHERE e."sourceId" = ANY(ARRAY[${sql.join(
+        sourceIds.map((id) => sql`${id}::uuid`),
+        sql`, `,
+      )}])
+        AND e."canonicalLabel" = ANY(ARRAY[${sql.join(
+          lowerLabels.map((l) => sql`${l}`),
+          sql`, `,
+        )}])
       
       UNION
       
@@ -622,33 +794,43 @@ export async function getRelatedEntitiesAcrossSources(options: {
       SELECT DISTINCT 
         e2.id, 
         e2.label, 
-        e2.canonical_label,
+        e2."canonicalLabel",
         et.hop + 1
       FROM entity_traversal et
       JOIN "GraphRelation" r ON (
-        r.from_entity_id = et.id OR r.to_entity_id = et.id
+        r."fromEntityId" = et.id OR r."toEntityId" = et.id
       )
       JOIN "GraphEntity" e2 ON (
         CASE 
-          WHEN r.from_entity_id = et.id THEN r.to_entity_id
-          ELSE r.from_entity_id
+          WHEN r."fromEntityId" = et.id THEN r."toEntityId"
+          ELSE r."fromEntityId"
         END = e2.id
       )
       WHERE et.hop < ${maxHops}
-        AND e2.source_id = ANY(${sourceIds})
+        AND e2."sourceId" = ANY(ARRAY[${sql.join(
+          sourceIds.map((id) => sql`${id}::uuid`),
+          sql`, `,
+        )}])
         -- Prioritize strong relationships
-        AND r.relation_type IN (
-          'uses', 'implements', 'extends', 'contains', 
-          'defines', 'prerequisite_of', 'relates_to'
+        AND r."relationType" IN (
+              'uses', 'implements', 'extends', 'contains', 
+              'defines', 'prerequisite_of', 'relates_to',
+              'built_on', 'created_by'
         )
     )
     SELECT DISTINCT label
     FROM entity_traversal
   `);
 
-  return (results as unknown as { rows: Array<{ label: string }> }).rows.map(
-    (row) => row.label,
-  );
+  if (!results || !Array.isArray(results)) {
+    console.error(
+      '[getRelatedEntitiesAcrossSources] Invalid results:',
+      results,
+    );
+    return entityLabels;
+  }
+
+  return results.map((row) => row.label);
 }
 
 /**
@@ -684,6 +866,13 @@ function getSemanticExpansions(entityLabels: string[]): string[] {
       'Django',
       'Flask',
     ],
+
+    // Web/JS ecosystem
+    react: ['Next.js', 'Vite', 'TypeScript', 'JavaScript'],
+    'next.js': ['React', 'Vercel', 'TypeScript', 'JavaScript'],
+    javascript: ['Node.js', 'TypeScript', 'React', 'Next.js', 'Express'],
+    'node.js': ['JavaScript', 'TypeScript', 'Express', 'Fastify'],
+    typescript: ['JavaScript', 'Node.js', 'React', 'Next.js'],
   };
 
   const expanded: Set<string> = new Set(entityLabels);

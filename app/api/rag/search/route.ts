@@ -129,8 +129,18 @@ export async function POST(request: NextRequest) {
       matchedEntities: string[];
       graphScore: number;
     }> = [];
+    let extractedEntities: string[] = [];
+    let extractionError: string | null = null;
+
     try {
+      console.log(
+        `[RAG Search] Starting entity extraction for query: "${query}"`,
+      );
       const queryEntities = await extractEntities(query);
+      extractedEntities = queryEntities.map((e) => e.label);
+      console.log(
+        `[RAG Search] Entity extraction complete. Found ${queryEntities.length} entities: ${extractedEntities.join(', ')}`,
+      );
       if (queryEntities.length > 0) {
         console.log(
           `[RAG Search] Query entities: ${queryEntities.map((e) => e.label).join(', ')}`,
@@ -159,6 +169,8 @@ export async function POST(request: NextRequest) {
       }
     } catch (graphError) {
       console.warn('[RAG Search] Graph search failed (non-fatal):', graphError);
+      extractionError =
+        graphError instanceof Error ? graphError.message : String(graphError);
     }
 
     // 3c. Merge vector and graph results (prefer chunks appearing in both)
@@ -224,6 +236,9 @@ export async function POST(request: NextRequest) {
       return {
         content: chunk.content,
         relevance: chunk.similarity,
+        vectorScore: chunk.vectorScore,
+        graphScore: chunk.graphScore,
+        hybridScore: chunk.hybridScore,
         sourceId: originalChunk?.sourceId || 'unknown',
         chunkIndex: originalChunk?.index || -1,
       };
@@ -236,6 +251,18 @@ export async function POST(request: NextRequest) {
       success: true,
       results,
       formattedContext,
+      debug: {
+        query,
+        extractedEntities,
+        extractionError,
+        queryEntitiesCount:
+          graphChunks.length > 0
+            ? hybridChunks.filter((c) => c.matchedEntities?.length > 0).length
+            : 0,
+        vectorResultsCount: hybridChunks.filter((c) => c.vectorScore > 0)
+          .length,
+        graphResultsCount: hybridChunks.filter((c) => c.graphScore > 0).length,
+      },
     });
   } catch (error) {
     console.error('[RAG Search] Error:', error);
