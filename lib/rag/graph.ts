@@ -28,14 +28,75 @@ function isValidEntity(label: string): boolean {
   // Filter out garbage entities
   if (!label || label.length < 2) return false;
 
+  const lower = label.toLowerCase();
+
+  // STOPWORD FILTERING - Reject common stopwords and question words
+  const stopwords = new Set([
+    'what',
+    'how',
+    'why',
+    'when',
+    'where',
+    'do',
+    'did',
+    'does',
+    'can',
+    'could',
+    'should',
+    'would',
+    'is',
+    'are',
+    'am',
+    'be',
+    'been',
+    'being',
+    'the',
+    'a',
+    'an',
+    'and',
+    'or',
+    'but',
+    'in',
+    'on',
+    'at',
+    'to',
+    'for',
+    'of',
+    'with',
+    'from',
+    'by',
+    'about',
+    'as',
+    'if',
+    'this',
+    'that',
+    'these',
+    'those',
+    'i',
+    'you',
+    'he',
+    'she',
+    'it',
+    'we',
+    'they',
+    'there',
+    'their',
+    'which',
+    'who',
+    'whom',
+    'whose',
+    'need',
+  ]);
+  if (stopwords.has(lower)) return false;
+
   // Reject entities longer than 5 words (likely garbage concatenation)
   const wordCount = label.split(/\s+/).filter(Boolean).length;
   if (wordCount > 5) return false;
 
-  // FIX 1: Reject single letter followed by word (e.g., "E Python", "F Fast")
+  // Reject single letter followed by word (e.g., "E Python", "F Fast")
   if (/^\b[A-Z]\s+[A-Z][a-z]+/.test(label)) return false;
 
-  // FIX 2: Check if same word appears at start and end (e.g., "Python ... Python")
+  // Check if same word appears at start and end (e.g., "Python ... Python")
   const words = label.split(/\s+/).filter(Boolean);
   if (
     words.length > 2 &&
@@ -44,7 +105,7 @@ function isValidEntity(label: string): boolean {
     return false;
   }
 
-  // FIX 3: Reject pattern like "E Python Framework D" (single letters at boundaries)
+  // Reject pattern like "E Python Framework D" (single letters at boundaries)
   if (/^\b[A-Z]\s+[A-Z]\w+.*[A-Z]\s*$/.test(label)) return false;
 
   // Reject highly repetitive patterns (e.g., "Python Python Python")
@@ -61,6 +122,41 @@ function isValidEntity(label: string): boolean {
   const genericNames = ['john', 'data', 'value', 'item', 'test'];
   if (genericNames.includes(label.toLowerCase()) && label.length < 6)
     return false;
+
+  // Reject common HTML/CSS fragments and text fragments
+  const textFragments = new Set([
+    'headings',
+    'paragraphs',
+    'tags',
+    'links',
+    'images',
+    'selectors',
+    'properties',
+    'elements',
+    'video',
+    'audio',
+    'visual presentation',
+    'canvas graphics',
+    'box model',
+    'layouts',
+    'colors',
+    'fonts',
+    'spacing',
+    'border',
+    'margin',
+    'padding',
+    'content',
+  ]);
+  if (textFragments.has(lower)) return false;
+
+  // Reject fragments with corrupted spacing or abbreviations (e.g., "U CS", "F box CS", "L5")
+  if (/\b[A-Z]\s{0,2}[A-Z]{2,}\b|\b[A-Z](\d+)?\s*$/i.test(label)) return false;
+
+  // Reject if mostly single/double letter words (noise pattern)
+  const singleLetterWords = label
+    .split(/\s+/)
+    .filter((w) => w.length <= 2).length;
+  if (singleLetterWords > label.split(/\s+/).length * 0.5) return false;
 
   return true;
 }
@@ -199,6 +295,25 @@ function extractTechnicalTerms(text: string): GraphEntityInput[] {
     ) || [];
   databases.forEach((db) => {
     terms.push({ label: db, type: 'entity', canonicalLabel: db.toLowerCase() });
+  });
+
+  // Architecture & Layer Terms (match space or hyphen variations)
+  const architectureTerms =
+    text.match(
+      /\b(full[\s-]?stack|front[\s-]?end|back[\s-]?end|frontend|backend|fullstack)\b/gi,
+    ) || [];
+  architectureTerms.forEach((term) => {
+    // Normalize variations: "Full Stack", "full-stack", "fullstack" → "full-stack"
+    const normalized = term
+      .toLowerCase()
+      .replace(/full[\s-]?stack/g, 'full-stack')
+      .replace(/front[\s-]?end/g, 'frontend')
+      .replace(/back[\s-]?end/g, 'backend');
+    terms.push({
+      label: term,
+      type: 'entity',
+      canonicalLabel: normalized,
+    });
   });
 
   // Remove duplicates

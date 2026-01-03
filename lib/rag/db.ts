@@ -521,6 +521,39 @@ export async function storeGraphEntitiesAndRelations(options: {
     });
   }
 
+  // CREATE CO-OCCURRENCE RELATIONSHIPS
+  // For all entities in the same chunk, create co_occurs relationships
+  if (chunkId && entitiesInDb.length >= 2) {
+    const entityIds = Array.from(entityMap.values());
+    const coOccursWeight = 0.2; // Base weight for co-occurrence (matches semantic weight)
+
+    // Create relationships for each pair of entities
+    for (let i = 0; i < entityIds.length; i++) {
+      for (let j = i + 1; j < entityIds.length; j++) {
+        const fromId = entityIds[i];
+        const toId = entityIds[j];
+
+        // Skip if this pair already has a directed relationship
+        const hasDirectedRelation = relationRows.some(
+          (r) =>
+            (r.fromEntityId === fromId && r.toEntityId === toId) ||
+            (r.fromEntityId === toId && r.toEntityId === fromId),
+        );
+
+        if (!hasDirectedRelation) {
+          relationRows.push({
+            sourceId,
+            fromEntityId: fromId,
+            toEntityId: toId,
+            relationType: 'co_occurs',
+            evidenceChunkId: chunkId,
+            weight: coOccursWeight,
+          });
+        }
+      }
+    }
+  }
+
   // Upsert relations with WEIGHT SATURATION CAP (prevents inflation)
   if (relationRows.length > 0) {
     const BATCH_SIZE = 50;
@@ -583,7 +616,7 @@ export async function getChunksByEntities(options: {
     sourceIds,
     entityLabels,
     temporalDecayRate = 0.01,
-    enableTwoHop = false,
+    enableTwoHop = true,
   } = options;
 
   if (sourceIds.length === 0 || entityLabels.length === 0) {
@@ -591,6 +624,21 @@ export async function getChunksByEntities(options: {
   }
 
   const lowerLabels = entityLabels.map((label) => label.toLowerCase());
+
+  console.log(
+    `[getChunksByEntities] Query for entities: ${entityLabels.join(', ')}, enableTwoHop=${enableTwoHop}`,
+  );
+
+  // Build the all_relations CTE conditionally based on enableTwoHop
+  const allRelationsSQL = enableTwoHop
+    ? sql`
+    SELECT * FROM bidirectional_relations
+    UNION ALL
+    SELECT * FROM two_hop_relations
+    `
+    : sql`
+    SELECT * FROM bidirectional_relations
+    `;
 
   // Unified CTE query: Match entities → Bidirectional relations → Related entities → Chunks → Scoring
   const results = await db.execute<{
@@ -640,11 +688,8 @@ export async function getChunksByEntities(options: {
         )
     ),
     
-    -- Step 3 (Optional): 2-hop expansion for parent context
+    -- Step 3: 2-hop expansion - find relations from entities found in 1-hop
     two_hop_relations AS (
-      ${
-        enableTwoHop
-          ? sql`
       SELECT 
         r2.id,
         r2."fromEntityId",
@@ -665,35 +710,23 @@ export async function getChunksByEntities(options: {
           r2."fromEntityId" IN (SELECT related_entity_id FROM bidirectional_relations)
           OR r2."toEntityId" IN (SELECT related_entity_id FROM bidirectional_relations)
         )
-        AND r2."relationType" IN ('contains', 'defines', 'extends')  -- Parent relationships only
-      `
-          : sql`SELECT NULL AS id LIMIT 0`
-      }
     ),
     
-    -- Step 4: Aggregate all relations (1-hop + optional 2-hop)
+    -- Step 4: Aggregate all relations (1-hop always + 2-hop when enabled)
     all_relations AS (
-      SELECT * FROM bidirectional_relations
-      ${enableTwoHop ? sql`UNION ALL SELECT * FROM two_hop_relations WHERE id IS NOT NULL` : sql``}
+      ${allRelationsSQL}
     ),
     
-    -- Step 5: Collect related entities
-    related_entities AS (
-      SELECT DISTINCT e.id, e.label, e."chunkId"
-      FROM "GraphEntity" e
-      WHERE e.id IN (SELECT related_entity_id FROM all_relations)
-    ),
-    
-    -- Step 6: Aggregate entities per chunk
+    -- Step 5: Find all chunks that contain related entities (not just entities with chunks)
     chunk_entities AS (
       SELECT 
-        COALESCE(me."chunkId", re."chunkId") AS chunk_id,
-        ARRAY_AGG(DISTINCT me.label) FILTER (WHERE me.label IS NOT NULL) AS matched_labels,
-        ARRAY_AGG(DISTINCT re.label) FILTER (WHERE re.label IS NOT NULL) AS related_labels
-      FROM matched_entities me
-      FULL OUTER JOIN related_entities re ON me."chunkId" = re."chunkId"
-      WHERE COALESCE(me."chunkId", re."chunkId") IS NOT NULL
-      GROUP BY COALESCE(me."chunkId", re."chunkId")
+        DISTINCT c.id AS chunk_id,
+        ARRAY_AGG(DISTINCT ge.label) FILTER (WHERE ge.id IN (SELECT id FROM matched_entities)) AS matched_labels,
+        ARRAY_AGG(DISTINCT ge.label) FILTER (WHERE ge.id IN (SELECT related_entity_id FROM all_relations)) AS related_labels
+      FROM "DocumentChunk" c
+      INNER JOIN "GraphEntity" ge ON c.id = ge."chunkId"
+      WHERE (ge.id IN (SELECT id FROM matched_entities) OR ge.id IN (SELECT related_entity_id FROM all_relations))
+      GROUP BY c.id
     ),
     
     -- Step 7: Calculate dynamic graph score with temporal decay & density normalization
@@ -746,6 +779,10 @@ export async function getChunksByEntities(options: {
     console.error('[getChunksByEntities] Invalid results:', results);
     return [];
   }
+
+  console.log(
+    `[getChunksByEntities] Found ${results.length} chunks, enableTwoHop=${enableTwoHop}, with relation counts: ${results.map((r) => r.relation_count).join(', ')}`,
+  );
 
   return results.map((row) => ({
     chunkId: row.chunk_id,

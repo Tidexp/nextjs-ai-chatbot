@@ -50,6 +50,7 @@ export async function POST(request: NextRequest) {
       sourceIds,
       topK = 3,
       similarityThreshold = 0.5,
+      enableGraphTwoHop = true, // Enable 2-hop graph traversal by default
     } = await request.json();
 
     let adjustedTopK = topK;
@@ -160,8 +161,9 @@ export async function POST(request: NextRequest) {
         const entityResults = await getChunksByEntities({
           sourceIds,
           entityLabels: expandedEntities,
-          enableTwoHop: false, // Already expanded, no need for 2-hop
+          enableTwoHop: enableGraphTwoHop, // Use request parameter
         });
+        console.log(`[RAG Search] Graph 2-Hop enabled: ${enableGraphTwoHop}`);
         graphChunks = entityResults;
         console.log(
           `[RAG Search] Graph search: ${graphChunks.length} entity-matched chunks`,
