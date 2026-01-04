@@ -333,6 +333,7 @@ function extractTechnicalTerms(text: string): GraphEntityInput[] {
 }
 
 function fallbackHeuristic(text: string): GraphEntityInput[] {
+  const vietnameseNames = extractVietnameseNames(text);
   // First, try to extract known technical terms
   const technicalTerms = extractTechnicalTerms(text);
 
@@ -349,7 +350,11 @@ function fallbackHeuristic(text: string): GraphEntityInput[] {
   }));
 
   // Merge technical terms with capitalized words, prioritize technical terms
-  const combined = [...technicalTerms, ...capitalizedEntities];
+  const combined = [
+    ...technicalTerms,
+    ...capitalizedEntities,
+    ...vietnameseNames,
+  ];
   const uniqueMap = new Map<string, GraphEntityInput>();
   combined.forEach((entity) => {
     if (entity.canonicalLabel && !uniqueMap.has(entity.canonicalLabel)) {
@@ -358,6 +363,33 @@ function fallbackHeuristic(text: string): GraphEntityInput[] {
   });
 
   return Array.from(uniqueMap.values());
+}
+
+function extractVietnameseNames(text: string): GraphEntityInput[] {
+  // Capture capitalized multi-word spans with Vietnamese diacritics (e.g., "Trần Duy Thái").
+  const pattern =
+    /\b[\p{Lu}][\p{L}.'’`-]+(?:\s+[\p{Lu}][\p{L}.'’`-]+){0,4}\b/gu;
+  const matches = text.match(pattern) || [];
+
+  const cleaned = matches
+    .map((m) => m.trim())
+    .filter((m) => m.split(/\s+/).length >= 2) // prefer multi-word names
+    .filter(isValidEntity);
+
+  const unique = Array.from(
+    new Map(
+      cleaned.map((label) => [
+        label.toLowerCase(),
+        {
+          label,
+          type: 'person',
+          canonicalLabel: label.toLowerCase(),
+        },
+      ]),
+    ).values(),
+  );
+
+  return unique;
 }
 
 export async function extractEntities(
@@ -397,12 +429,13 @@ export async function extractEntities(
     }
 
     const nerEntities = mergeTokens(result as any[]);
+    const vietnameseNames = extractVietnameseNames(cleaned);
     logs.push(
-      `NER entities: ${nerEntities.length} (${nerEntities.map((e) => e.label).join(', ')})`,
+      `NER entities: ${nerEntities.length} (${nerEntities.map((e) => e.label).join(', ')}); VI names: ${vietnameseNames.length} (${vietnameseNames.map((e) => e.label).join(', ')})`,
     );
 
     // Merge NER results with technical terms, remove duplicates
-    const combined = [...technicalTerms, ...nerEntities];
+    const combined = [...technicalTerms, ...nerEntities, ...vietnameseNames];
     const uniqueMap = new Map<string, GraphEntityInput>();
 
     logs.push(
@@ -579,7 +612,9 @@ export async function extractAndStoreGraphData(options: {
   // This is especially important for non-English text or when NER misses entities
   const tripletEntities: GraphEntityInput[] = [];
   if (triplets && triplets.length > 0) {
-    const existingLabels = new Set(extractedEntities.map((e) => e.canonicalLabel));
+    const existingLabels = new Set(
+      extractedEntities.map((e) => e.canonicalLabel),
+    );
 
     for (const triplet of triplets) {
       const subjectCanonical = triplet.subject.toLowerCase().trim();

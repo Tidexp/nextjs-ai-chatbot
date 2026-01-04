@@ -10,7 +10,11 @@ import {
 } from 'react';
 import { useSession } from 'next-auth/react';
 import type { ChatStatus } from 'ai';
-
+import {
+  RAGSettingsPanel,
+  DEFAULT_RAG_SETTINGS,
+  type RAGSettings,
+} from '@/components/rag-settings';
 import { chatModels, DEFAULT_CHAT_MODEL } from '@/lib/ai/models';
 import { instructorSystemPrompt } from '@/lib/ai/prompts';
 import type { Attachment, ChatMessage } from '@/lib/types';
@@ -43,6 +47,8 @@ export const InstructorChat = forwardRef<
   const [status, setStatus] = useState<ChatStatus>('ready');
   const [selectedModel, setSelectedModel] =
     useState<string>(DEFAULT_CHAT_MODEL);
+  const [ragSettings, setRagSettings] =
+    useState<RAGSettings>(DEFAULT_RAG_SETTINGS);
   const [input, setInput] = useState('');
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -133,8 +139,11 @@ export const InstructorChat = forwardRef<
               body: JSON.stringify({
                 query: userQuery,
                 sourceIds,
-                topK: 15, // Increased from 8 to get more comprehensive results across multiple sources
-                similarityThreshold: 0.15, // More permissive threshold for broader coverage
+                topK: ragSettings.topK,
+                similarityThreshold: ragSettings.similarityThreshold,
+                enableGraphTwoHop: ragSettings.enableGraphTwoHop,
+                graphBoost: ragSettings.graphBoost,
+                maxChunksPerSource: ragSettings.maxChunksPerSource, // New parameter
               }),
             });
 
@@ -319,7 +328,7 @@ No teaching materials are currently enabled. Provide helpful general guidance an
         abortControllerRef.current = null;
       }
     },
-    [enabledSourceIds, chatId, isLoading, selectedModel, sources],
+    [enabledSourceIds, chatId, isLoading, selectedModel, sources, ragSettings],
   );
 
   // Expose sendMessage to parent via ref
@@ -341,22 +350,33 @@ No teaching materials are currently enabled. Provide helpful general guidance an
 
   return (
     <div className="flex flex-col h-full">
-      {/* Model selector - compact dropdown */}
-      <div className="border-b px-3 py-2 bg-background flex items-center gap-2">
-        <span className="text-xs text-muted-foreground">Model:</span>
-        <select
-          id="model-select"
-          value={selectedModel}
-          onChange={(e) => setSelectedModel(e.target.value)}
-          disabled={isLoading}
-          className="px-2 py-1 text-xs border rounded bg-background text-foreground disabled:opacity-50 cursor-pointer"
-        >
-          {chatModels.map((model) => (
-            <option key={model.id} value={model.id}>
-              {model.name}
-            </option>
-          ))}
-        </select>
+      {/* Model selector and RAG settings - compact header */}
+      <div className="border-b px-3 py-2 bg-background flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-muted-foreground">Model:</span>
+          <select
+            id="model-select"
+            value={selectedModel}
+            onChange={(e) => setSelectedModel(e.target.value)}
+            disabled={isLoading}
+            className="px-2 py-1 text-xs border rounded bg-background text-foreground disabled:opacity-50 cursor-pointer"
+          >
+            {chatModels.map((model) => (
+              <option key={model.id} value={model.id}>
+                {model.name}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-muted-foreground">
+            {enabledSourceIds.size} sources
+          </span>
+          <RAGSettingsPanel
+            settings={ragSettings}
+            onSettingsChange={setRagSettings}
+          />
+        </div>
       </div>
 
       {/* Messages area */}

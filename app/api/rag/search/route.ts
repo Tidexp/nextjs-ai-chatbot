@@ -25,13 +25,12 @@
 import { type NextRequest, NextResponse } from 'next/server';
 import {
   generateEmbedding,
-  findRelevantChunks,
   formatContextForLLM,
+  cosineSimilarity,
 } from '@/lib/rag/embeddings';
 import {
   getChunksFromSources,
   getChunksByEntities,
-  getRelatedEntitiesAcrossSources,
   expandEntitiesWithSemantics,
 } from '@/lib/rag/db';
 import { extractEntities } from '@/lib/rag/graph';
@@ -48,10 +47,11 @@ export async function POST(request: NextRequest) {
     const {
       query,
       sourceIds,
-      topK = 3,
-      similarityThreshold = 0.5,
-      enableGraphTwoHop = true, // Enable 2-hop graph traversal by default
-      graphBoost = 0.3, // Graph score multiplier (0.0 = pure vector, 0.5 = strong graph influence)
+      topK = 15,
+      similarityThreshold = 0.15,
+      enableGraphTwoHop = false,
+      graphBoost = 0.3,
+      maxChunksPerSource = 2, // NEW: Receive from UI
     } = await request.json();
 
     // Dev override: allow graphBoost via query param for quick testing
@@ -70,6 +70,16 @@ export async function POST(request: NextRequest) {
       adjustedTopK = 5; // Get more chunks for comparison queries
       console.log(
         `[RAG Search] Comparison query detected, increasing topK to ${adjustedTopK}`,
+      );
+    }
+
+    if (sourceIds.length > 5) {
+      adjustedTopK = Math.max(
+        adjustedTopK,
+        Math.min(sourceIds.length, topK * 3),
+      );
+      console.log(
+        `[RAG Search] Many sources detected (${sourceIds.length}), increasing topK to ${adjustedTopK} for diversity`,
       );
     }
 
@@ -116,22 +126,79 @@ export async function POST(request: NextRequest) {
       `[RAG Search] Searching across ${sourceChunks.length} chunks from ${new Set(sourceChunks.map((c) => c.sourceId)).size} sources`,
     );
 
-    // 3. Find relevant chunks using semantic similarity (vector search)
-    const relevantChunks = findRelevantChunks(
-      queryEmbedding,
-      sourceChunks.map((chunk) => ({
+    // 3. Source-aware vector search: ensure each source gets representation
+    const scoredChunks = sourceChunks
+      .map((chunk) => ({
         content: chunk.content,
         embedding: chunk.embedding,
         index: chunk.index,
-      })),
-      adjustedTopK,
-      similarityThreshold,
-    );
+        sourceId: chunk.sourceId,
+        similarity: cosineSimilarity(queryEmbedding, chunk.embedding),
+      }))
+      .filter((chunk) => chunk.similarity >= similarityThreshold)
+      .sort((a, b) => b.similarity - a.similarity);
 
-    console.log(
-      `[RAG Search] Vector search: ${relevantChunks.length} relevant chunks`,
-    );
+    // If no chunks pass threshold, take best from each source anyway
+    const passingScoredChunks =
+      scoredChunks.length > 0
+        ? scoredChunks
+        : sourceChunks
+            .map((chunk) => ({
+              content: chunk.content,
+              embedding: chunk.embedding,
+              index: chunk.index,
+              sourceId: chunk.sourceId,
+              similarity: cosineSimilarity(queryEmbedding, chunk.embedding),
+            }))
+            .sort((a, b) => b.similarity - a.similarity);
 
+    // Group by source
+    const chunksBySourceVector = new Map<string, typeof passingScoredChunks>();
+    for (const chunk of passingScoredChunks) {
+      if (!chunksBySourceVector.has(chunk.sourceId)) {
+        chunksBySourceVector.set(chunk.sourceId, []);
+      }
+      const chunks = chunksBySourceVector.get(chunk.sourceId);
+      if (chunks) {
+        chunks.push(chunk);
+      }
+    }
+
+    // Get best chunk from EACH source first (guarantees diversity)
+    const diverseVectorChunks: typeof passingScoredChunks = [];
+    for (const [sourceId, chunks] of chunksBySourceVector.entries()) {
+      if (chunks.length > 0) {
+        diverseVectorChunks.push(chunks[0]); // Top chunk per source
+      }
+    }
+
+    // Fill remaining slots with next-best across all sources (max 2 chunks per source)
+    const chunkCountBySource = new Map<string, number>();
+    for (const chunk of diverseVectorChunks) {
+      chunkCountBySource.set(chunk.sourceId, 1); // Already took 1 from each
+    }
+
+    const remainingVector: typeof passingScoredChunks = [];
+    for (const chunk of passingScoredChunks) {
+      // Skip if already in diverse chunks
+      if (diverseVectorChunks.some((d) => d.content === chunk.content)) {
+        continue;
+      }
+
+      const currentCount = chunkCountBySource.get(chunk.sourceId) || 0;
+      if (currentCount >= maxChunksPerSource) {
+        continue;
+      }
+
+      // Add this chunk
+      remainingVector.push(chunk);
+      chunkCountBySource.set(chunk.sourceId, currentCount + 1);
+
+      // Stop when we have enough
+      if (remainingVector.length >= adjustedTopK - diverseVectorChunks.length) {
+        break;
+      }
+    }
     // 3b. Graph RAG: Expand entities and find related chunks across sources
     let graphChunks: Array<{
       content: string;
@@ -169,9 +236,18 @@ export async function POST(request: NextRequest) {
           `[RAG Search] Expanded to ${expandedEntities.length} entities (from ${queryEntities.length})`,
         );
 
+        // Limit entities for 2-hop to prevent exponential query explosion (top 8 most relevant)
+        const limitedEntities = enableGraphTwoHop
+          ? expandedEntities.slice(0, 8)
+          : expandedEntities;
+
+        console.log(
+          `[RAG Search] Using ${limitedEntities.length} entities for graph query (2-hop: ${enableGraphTwoHop})`,
+        );
+
         const entityResults = await getChunksByEntities({
           sourceIds,
-          entityLabels: expandedEntities,
+          entityLabels: limitedEntities,
           enableTwoHop: enableGraphTwoHop, // Use request parameter
         });
         console.log(`[RAG Search] Graph 2-Hop enabled: ${enableGraphTwoHop}`);
@@ -190,6 +266,7 @@ export async function POST(request: NextRequest) {
     const mergedContent = new Map<string, any>();
 
     // Add vector search results
+    const relevantChunks = [...diverseVectorChunks, ...remainingVector];
     for (const chunk of relevantChunks) {
       mergedContent.set(chunk.content, {
         ...chunk,
@@ -200,12 +277,15 @@ export async function POST(request: NextRequest) {
     }
 
     // Boost chunks that also match entities (using dynamic graphScore)
+    const graphLimit = Math.max(topK * 2, sourceIds.length * 2);
+
     for (const graphChunk of graphChunks) {
       if (mergedContent.has(graphChunk.content)) {
         const existing = mergedContent.get(graphChunk.content);
         existing.graphScore = graphChunk.graphScore;
         existing.matchedEntities = graphChunk.matchedEntities;
-      } else if (mergedContent.size < topK * 2) {
+      } else if (mergedContent.size < graphLimit) {
+        // CHANGE: use graphLimit instead of topK * 2
         // Add high-quality graph results even if vector score was low
         mergedContent.set(graphChunk.content, {
           content: graphChunk.content,
@@ -219,13 +299,43 @@ export async function POST(request: NextRequest) {
 
     // Sort by hybrid score (vector + weighted graph boost)
     // HybridScore = VectorSimilarity + (effectiveGraphBoost * GraphScore)
-    const hybridChunks = Array.from(mergedContent.values())
-      .map((chunk) => ({
-        ...chunk,
-        hybridScore: chunk.vectorScore + chunk.graphScore * effectiveGraphBoost,
-      }))
+    const allHybridChunks = Array.from(mergedContent.values()).map((chunk) => ({
+      ...chunk,
+      hybridScore: chunk.vectorScore + chunk.graphScore * effectiveGraphBoost,
+    }));
+
+    // Source-aware selection: prioritize getting at least 1 chunk per source
+    const chunksBySource = new Map<string, any[]>();
+    for (const chunk of allHybridChunks) {
+      const originalChunk = sourceChunks.find(
+        (sc) => sc.content === chunk.content,
+      );
+      const sid = originalChunk?.sourceId || 'unknown';
+      if (!chunksBySource.has(sid)) {
+        chunksBySource.set(sid, []);
+      }
+      const chunks = chunksBySource.get(sid);
+      if (chunks) {
+        chunks.push(chunk);
+      }
+    }
+
+    // Get top chunk from each source first (ensures diversity)
+    const diverseChunks: any[] = [];
+    for (const [sourceId, chunks] of chunksBySource.entries()) {
+      chunks.sort((a, b) => b.hybridScore - a.hybridScore);
+      diverseChunks.push(chunks[0]);
+    }
+
+    // Fill remaining slots with highest scores across all sources
+    const remaining = allHybridChunks
+      .filter((c) => !diverseChunks.includes(c))
       .sort((a, b) => b.hybridScore - a.hybridScore)
-      .slice(0, topK);
+      .slice(0, Math.max(0, adjustedTopK - diverseChunks.length));
+
+    const hybridChunks = [...diverseChunks, ...remaining]
+      .sort((a, b) => b.hybridScore - a.hybridScore)
+      .slice(0, adjustedTopK);
 
     console.log(
       `[RAG Search] Hybrid result: ${hybridChunks.length} chunks (${hybridChunks.filter((c) => c.graphScore > 0).length} with entity matches)`,
@@ -260,6 +370,38 @@ export async function POST(request: NextRequest) {
     // 5. Format results for LLM context
     const formattedContext = formatContextForLLM(hybridChunks);
 
+    // Calculate statistics for report
+    const vectorOnlyChunks = hybridChunks.filter(
+      (c) => c.vectorScore > 0 && c.graphScore === 0,
+    );
+    const graphOnlyChunks = hybridChunks.filter(
+      (c) => c.vectorScore === 0 && c.graphScore > 0,
+    );
+    const bothChunks = hybridChunks.filter(
+      (c) => c.vectorScore > 0 && c.graphScore > 0,
+    );
+
+    // Calculate average scores
+    const avgVectorScore =
+      hybridChunks.reduce((sum, c) => sum + c.vectorScore, 0) /
+      hybridChunks.length;
+    const avgGraphScore =
+      hybridChunks.reduce((sum, c) => sum + c.graphScore, 0) /
+      hybridChunks.length;
+    const avgHybridScore =
+      hybridChunks.reduce((sum, c) => sum + c.hybridScore, 0) /
+      hybridChunks.length;
+
+    // Calculate max weights from graph chunks
+    const maxWeights = graphChunks
+      .filter((c) => mergedContent.has(c.content))
+      .map((c) => ({
+        content: `${c.content.slice(0, 50)}...`,
+        matchedEntities: c.matchedEntities?.length || 0,
+        graphScore: c.graphScore,
+      }))
+      .sort((a, b) => b.graphScore - a.graphScore);
+
     return NextResponse.json({
       success: true,
       results,
@@ -276,6 +418,18 @@ export async function POST(request: NextRequest) {
         vectorResultsCount: hybridChunks.filter((c) => c.vectorScore > 0)
           .length,
         graphResultsCount: hybridChunks.filter((c) => c.graphScore > 0).length,
+      },
+      stats: {
+        totalChunks: hybridChunks.length,
+        vectorOnlyChunks: vectorOnlyChunks.length,
+        graphOnlyChunks: graphOnlyChunks.length,
+        bothChunks: bothChunks.length,
+        avgVectorScore: avgVectorScore.toFixed(3),
+        avgGraphScore: avgGraphScore.toFixed(3),
+        avgHybridScore: avgHybridScore.toFixed(3),
+        graphBoostUsed: effectiveGraphBoost,
+        twoHopEnabled: enableGraphTwoHop,
+        maxWeights: maxWeights.slice(0, 5), // Top 5 for brevity
       },
     });
   } catch (error) {
