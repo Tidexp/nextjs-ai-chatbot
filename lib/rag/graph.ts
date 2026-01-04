@@ -150,7 +150,12 @@ function isValidEntity(label: string): boolean {
   if (textFragments.has(lower)) return false;
 
   // Reject fragments with corrupted spacing or abbreviations (e.g., "U CS", "F box CS", "L5")
-  if (/\b[A-Z]\s{0,2}[A-Z]{2,}\b|\b[A-Z](\d+)?\s*$/i.test(label)) return false;
+  // Fixed: Only reject if it's JUST a single capital letter (not a full word like "Python")
+  if (
+    /\b[A-Z]\s{0,2}[A-Z]{2,}\b|\b[A-Z](\d+)?$/.test(label) &&
+    label.length <= 2
+  )
+    return false;
 
   // Reject if mostly single/double letter words (noise pattern)
   const singleLetterWords = label
@@ -357,11 +362,15 @@ function fallbackHeuristic(text: string): GraphEntityInput[] {
 
 export async function extractEntities(
   text: string,
-): Promise<GraphEntityInput[]> {
+): Promise<{ entities: GraphEntityInput[]; logs: string[] }> {
   const cleaned = sanitize(text);
+  const logs: string[] = [];
 
   // Always extract technical terms first
   const technicalTerms = extractTechnicalTerms(cleaned);
+  logs.push(
+    `Query: "${text}" → Technical terms: ${technicalTerms.length} (${technicalTerms.map((t) => t.label).join(', ')})`,
+  );
   console.log(
     `[Entity Extraction] Query: "${text}" → Cleaned: "${cleaned}" → Technical terms found: ${technicalTerms.length} (${technicalTerms.map((t) => t.label).join(', ')})`,
   );
@@ -373,44 +382,79 @@ export async function extractEntities(
     });
 
     if (!Array.isArray(result) || result.length === 0) {
+      logs.push('NER returned empty, using technical terms only');
       console.log(
         `[Entity Extraction] NER returned empty, using fallback. Technical terms: ${technicalTerms.length}`,
       );
-      return technicalTerms.length > 0
-        ? technicalTerms
-        : fallbackHeuristic(cleaned);
+      console.log(`[EXTRACTION LOGS]\n${logs.join('\n')}`);
+      return {
+        entities:
+          technicalTerms.length > 0
+            ? technicalTerms
+            : fallbackHeuristic(cleaned),
+        logs,
+      };
     }
 
     const nerEntities = mergeTokens(result as any[]);
+    logs.push(
+      `NER entities: ${nerEntities.length} (${nerEntities.map((e) => e.label).join(', ')})`,
+    );
 
     // Merge NER results with technical terms, remove duplicates
     const combined = [...technicalTerms, ...nerEntities];
     const uniqueMap = new Map<string, GraphEntityInput>();
 
+    logs.push(
+      `Combined before validation: ${combined.length} (${combined.map((e) => e.label).join(', ')})`,
+    );
+    console.log(
+      `[Entity Extraction] Combined entities before validation: ${combined.length} (${combined.map((e) => e.label).join(', ')})`,
+    );
+
+    const validationResults: string[] = [];
     combined.forEach((entity) => {
+      const isValid = isValidEntity(entity.label);
+      validationResults.push(`"${entity.label}": ${isValid ? 'PASS' : 'FAIL'}`);
+      console.log(
+        `[Entity Extraction] Validating "${entity.label}": isValid=${isValid}, hasCanonical=${!!entity.canonicalLabel}`,
+      );
+
       if (
-        isValidEntity(entity.label) &&
+        isValid &&
         entity.canonicalLabel &&
         !uniqueMap.has(entity.canonicalLabel)
       ) {
         uniqueMap.set(entity.canonicalLabel, entity);
-      } else if (!isValidEntity(entity.label)) {
+      } else if (!isValid) {
         console.log(
           `[Entity Extraction] Filtered out invalid entity: "${entity.label}"`,
         );
       }
     });
 
+    logs.push(`Validation: ${validationResults.join(', ')}`);
+
     const final = Array.from(uniqueMap.values());
+    logs.push(
+      `Final entities: ${final.length} (${final.map((e) => e.label).join(', ')})`,
+    );
     console.log(
       `[Entity Extraction] Final entities: ${final.length} (${final.map((e) => e.label).join(', ')})`,
     );
-    return final;
+    console.log(`[EXTRACTION LOGS]\n${logs.join('\n')}`);
+    return { entities: final, logs };
   } catch (error) {
     console.warn('NER extraction failed, using fallback:', error);
-    return technicalTerms.length > 0
-      ? technicalTerms
-      : fallbackHeuristic(cleaned);
+    logs.push(
+      `ERROR: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    console.log(`[EXTRACTION LOGS]\n${logs.join('\n')}`);
+    return {
+      entities:
+        technicalTerms.length > 0 ? technicalTerms : fallbackHeuristic(cleaned),
+      logs,
+    };
   }
 }
 
@@ -529,13 +573,13 @@ export async function extractAndStoreGraphData(options: {
     version,
     isLatestVersion,
   } = options;
-  const entities = await extractEntities(text);
+  const { entities: extractedEntities } = await extractEntities(text);
 
   // Supplement entities from triplets if they're missing
   // This is especially important for non-English text or when NER misses entities
   const tripletEntities: GraphEntityInput[] = [];
   if (triplets && triplets.length > 0) {
-    const existingLabels = new Set(entities.map((e) => e.canonicalLabel));
+    const existingLabels = new Set(extractedEntities.map((e) => e.canonicalLabel));
 
     for (const triplet of triplets) {
       const subjectCanonical = triplet.subject.toLowerCase().trim();
@@ -561,7 +605,7 @@ export async function extractAndStoreGraphData(options: {
     }
   }
 
-  const mergedEntities = [...entities, ...tripletEntities];
+  const mergedEntities = [...extractedEntities, ...tripletEntities];
 
   const { entityIds, relationCount } = await storeGraphEntitiesAndRelations({
     sourceId,

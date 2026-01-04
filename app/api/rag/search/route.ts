@@ -51,7 +51,15 @@ export async function POST(request: NextRequest) {
       topK = 3,
       similarityThreshold = 0.5,
       enableGraphTwoHop = true, // Enable 2-hop graph traversal by default
+      graphBoost = 0.3, // Graph score multiplier (0.0 = pure vector, 0.5 = strong graph influence)
     } = await request.json();
+
+    // Dev override: allow graphBoost via query param for quick testing
+    const url = new URL(request.url);
+    const graphBoostOverride = Number(url.searchParams.get('graphBoost'));
+    const effectiveGraphBoost = Number.isNaN(graphBoostOverride)
+      ? graphBoost
+      : graphBoostOverride;
 
     let adjustedTopK = topK;
     if (
@@ -132,12 +140,15 @@ export async function POST(request: NextRequest) {
     }> = [];
     let extractedEntities: string[] = [];
     let extractionError: string | null = null;
+    let extractionLogs: string[] = [];
 
     try {
       console.log(
         `[RAG Search] Starting entity extraction for query: "${query}"`,
       );
-      const queryEntities = await extractEntities(query);
+      const extractionResult = await extractEntities(query);
+      const queryEntities = extractionResult.entities;
+      extractionLogs = extractionResult.logs;
       extractedEntities = queryEntities.map((e) => e.label);
       console.log(
         `[RAG Search] Entity extraction complete. Found ${queryEntities.length} entities: ${extractedEntities.join(', ')}`,
@@ -207,11 +218,11 @@ export async function POST(request: NextRequest) {
     }
 
     // Sort by hybrid score (vector + weighted graph boost)
-    // HybridScore = VectorSimilarity + (0.3 * GraphScore)
+    // HybridScore = VectorSimilarity + (effectiveGraphBoost * GraphScore)
     const hybridChunks = Array.from(mergedContent.values())
       .map((chunk) => ({
         ...chunk,
-        hybridScore: chunk.vectorScore + chunk.graphScore * 0.5,
+        hybridScore: chunk.vectorScore + chunk.graphScore * effectiveGraphBoost,
       }))
       .sort((a, b) => b.hybridScore - a.hybridScore)
       .slice(0, topK);
@@ -257,6 +268,7 @@ export async function POST(request: NextRequest) {
         query,
         extractedEntities,
         extractionError,
+        extractionLogs,
         queryEntitiesCount:
           graphChunks.length > 0
             ? hybridChunks.filter((c) => c.matchedEntities?.length > 0).length
